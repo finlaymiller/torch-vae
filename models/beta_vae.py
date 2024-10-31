@@ -12,7 +12,7 @@ class BetaVAE(BaseVAE):
     def __init__(self,
                  in_channels: int,
                  latent_dim: int,
-                 hidden_dims: List = None,
+                 hidden_dims: List | None = None,
                  beta: int = 4,
                  gamma:float = 1000.,
                  max_capacity: int = 25,
@@ -83,7 +83,7 @@ class BetaVAE(BaseVAE):
                             nn.LeakyReLU(),
                             nn.Conv2d(hidden_dims[-1], out_channels= 3,
                                       kernel_size= 3, padding= 1),
-                            nn.Tanh())
+                            nn.Sigmoid())
 
     def encode(self, input: Tensor) -> List[Tensor]:
         """

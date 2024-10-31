@@ -12,7 +12,7 @@ class BetaTCVAE(BaseVAE):
     def __init__(self,
                  in_channels: int,
                  latent_dim: int,
-                 hidden_dims: List = None,
+                 hidden_dims: List | None = None,
                  anneal_steps: int = 200,
                  alpha: float = 1.,
                  beta: float =  6.,
@@ -79,7 +79,7 @@ class BetaTCVAE(BaseVAE):
                             nn.LeakyReLU(),
                             nn.Conv2d(hidden_dims[-1], out_channels= 3,
                                       kernel_size= 3, padding= 1),
-                            nn.Tanh())
+                            nn.Sigmoid())
 
     def encode(self, input: Tensor) -> List[Tensor]:
         """
@@ -144,7 +144,7 @@ class BetaTCVAE(BaseVAE):
     def loss_function(self,
                       *args,
                       **kwargs) -> dict:
-        """
+        r"""
         Computes the VAE loss function.
         KL(N(\mu, \sigma), N(0, 1)) = \log \frac{1}{\sigma} + \frac{\sigma^2 + \mu^2}{2} - \frac{1}{2}
         :param args:

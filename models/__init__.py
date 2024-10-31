@@ -13,7 +13,7 @@ from .fvae import *
 from .cat_vae import *
 from .joint_vae import *
 from .info_vae import *
-# from .twostage_vae import *
+from .twostage_vae import *
 from .lvae import LVAE
 from .logcosh_vae import *
 from .swae import *
@@ -49,4 +49,6 @@ vae_models = {'HVAE':HVAE,
               'LogCoshVAE':LogCoshVAE,
               'VanillaVAE':VanillaVAE,
               'ConditionalVAE':ConditionalVAE,
-              'CategoricalVAE':CategoricalVAE}
+              'CategoricalVAE':CategoricalVAE,
+			  'TwoStageVAE':TwoStageVAE,
+			  }

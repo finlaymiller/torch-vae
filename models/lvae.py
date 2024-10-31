@@ -128,7 +128,7 @@ class LVAE(BaseVAE):
                             nn.LeakyReLU(),
                             nn.Conv2d(hidden_dims[-1], out_channels= 3,
                                       kernel_size= 3, padding= 1),
-                            nn.Tanh())
+                            nn.Sigmoid())
         hidden_dims.reverse()
 
     def encode(self, input: Tensor) -> List[Tensor]:
@@ -218,7 +218,7 @@ class LVAE(BaseVAE):
     def loss_function(self,
                       *args,
                       **kwargs) -> dict:
-        """
+        r"""
         Computes the VAE loss function.
         KL(N(\mu, \sigma), N(0, 1)) = \log \frac{1}{\sigma} + \frac{\sigma^2 + \mu^2}{2} - \frac{1}{2}
         :param args:

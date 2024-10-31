@@ -5,13 +5,15 @@ import numpy as np
 from pathlib import Path
 from models import *
 from experiment import VAEXperiment
+import torch
 import torch.backends.cudnn as cudnn
 from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import TensorBoardLogger
-from pytorch_lightning.utilities.seed import seed_everything
+from pytorch_lightning import seed_everything
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from dataset import VAEDataset
-from pytorch_lightning.plugins import DDPPlugin
+from pytorch_lightning.strategies import DDPStrategy
+from collections import OrderedDict
 
 
 parser = argparse.ArgumentParser(description='Generic runner for VAE models')
@@ -34,8 +36,16 @@ tb_logger =  TensorBoardLogger(save_dir=config['logging_params']['save_dir'],
 
 # For reproducibility
 seed_everything(config['exp_params']['manual_seed'], True)
-
 model = vae_models[config['model_params']['name']](**config['model_params'])
+
+if 'resume_training' in config['logging_params'] and config['logging_params']['resume_training']:
+    checkpoint = torch.load(config['custom_params']['resume_chkpt_path'])
+    state_dict = checkpoint['state_dict']
+    new_state_dict = OrderedDict()
+    for k, v in state_dict.items():
+        new_state_dict[k.replace("model.", "")] = v
+    model.load_state_dict(new_state_dict)
+
 experiment = VAEXperiment(model,
                           config['exp_params'])
 
@@ -46,11 +56,11 @@ runner = Trainer(logger=tb_logger,
                  callbacks=[
                      LearningRateMonitor(),
                      ModelCheckpoint(save_top_k=2, 
-                                     dirpath =os.path.join(tb_logger.log_dir , "checkpoints"), 
-                                     monitor= "val_loss",
-                                     save_last= True),
+                                     dirpath=os.path.join(tb_logger.log_dir, "checkpoints"), 
+                                     monitor="val_loss",
+                                     save_last=True),
                  ],
-                 strategy=DDPPlugin(find_unused_parameters=False),
+                 strategy=DDPStrategy(find_unused_parameters=False),  # Updated usage
                  **config['trainer_params'])
 
 

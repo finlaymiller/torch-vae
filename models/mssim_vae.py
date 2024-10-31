@@ -75,7 +75,7 @@ class MSSIMVAE(BaseVAE):
                             nn.LeakyReLU(),
                             nn.Conv2d(hidden_dims[-1], out_channels= 3,
                                       kernel_size= 3, padding= 1),
-                            nn.Tanh())
+                            nn.Sigmoid())
 
         self.mssim_loss = MSSIM(self.in_channels,
                                 window_size,
@@ -131,7 +131,7 @@ class MSSIMVAE(BaseVAE):
     def loss_function(self,
                       *args: Any,
                       **kwargs) -> dict:
-        """
+        r"""
         Computes the VAE loss function.
         KL(N(\mu, \sigma), N(0, 1)) = \log \frac{1}{\sigma} + \frac{\sigma^2 + \mu^2}{2} - \frac{1}{2}
         :param args:
