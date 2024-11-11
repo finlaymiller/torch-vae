@@ -28,10 +28,13 @@ class VanillaVAE(L.LightningModule):
         self,
         in_channels: int,
         latent_dim: int,
+        exp_params,
         hidden_dims: List | None = None,
         **kwargs,
     ) -> None:
         super().__init__()
+
+        self.exp_params = exp_params
 
         self.last_conv_size = 4
         self.latent_dim = latent_dim
@@ -158,7 +161,7 @@ class VanillaVAE(L.LightningModule):
             output=self.decode(z), input=input, encoded=encoding, latents=z
         )
 
-    def loss(self, output_model: ModelOutput, kld_weight: float = 0.00025):
+    def loss(self, output_model: ModelOutput):
         r"""
         Computes the VAE loss function.
         KL(N(\mu, \sigma), N(0, 1)) = \log \frac{1}{\sigma} + \frac{\sigma^2 + \mu^2}{2} - \frac{1}{2}
@@ -176,16 +179,16 @@ class VanillaVAE(L.LightningModule):
             ),
             dim=0,
         )  # TODO move this to its own fn
-        loss = recons_loss + kld_weight * kld_loss
+        loss = recons_loss + self.exp_params["kld_weight"] * kld_loss
         return LossOutput(
             loss=loss,
             reconstruction_loss=recons_loss.detach(),
             kld_loss=-kld_loss.detach(),
         )
-    
+
     def _weights_init(self, m):
         if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
-            init.kaiming_normal_(m.weight, nonlinearity='leaky_relu')
+            init.kaiming_normal_(m.weight, nonlinearity="leaky_relu")
             if m.bias is not None:
                 init.zeros_(m.bias)
         elif isinstance(m, nn.Linear):
@@ -202,25 +205,37 @@ class VanillaVAE(L.LightningModule):
         output = self.forward(x)
         loss = self.loss(output)
         self.log("train_loss", loss["loss"], prog_bar=True)
-        self.log("reconstruction_loss", loss["reconstruction_loss"], prog_bar=True)
-        self.log("kld_loss", loss["kld_loss"], prog_bar=True)
+        self.log("reconstruction_loss", loss["reconstruction_loss"], prog_bar=False)
+        self.log("kld_loss", loss["kld_loss"], prog_bar=False)
+        return loss["loss"]
+
+    def validation_step(self, batch, batch_idx):
+        x, _ = batch
+        output = self.forward(x)
+        loss = self.loss(output)
+        self.log("val_loss", loss["loss"], prog_bar=True)
+        self.log(
+            "val_reconstruction_loss",
+            loss["reconstruction_loss"],
+            prog_bar=False,
+        )
+        self.log("val_kld_loss", loss["kld_loss"], prog_bar=False)
         return loss["loss"]
 
     def configure_optimizers(self):
-        optimizer = optim.Adam(self.parameters(), lr=1e-3, weight_decay=1e-5)
-        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
-        # return [optimizer], [scheduler]
+        optimizer = optim.Adam(
+            self.parameters(),
+            lr=self.exp_params["laerning_rate"],
+            weight_decay=self.exp_params["weight_decay"],
+        )
+        scheduler = optim.lr_scheduler.StepLR(
+            optimizer, step_size=10, gamma=self.exp_params["scheduler_gamma"]
+        )
         return {
             "optimizer": optimizer,
             "gradient_clip_val": 1.0,
             "scheduler": scheduler,
         }
-
-    def validation_step(self, batch, batch_idx):
-        x, _ = batch
-        output = self.forward(x)
-        loss_output = self.loss(output)
-        self.log("val_loss", loss_output["loss"], prog_bar=True)
 
     def on_after_backward(self):
         grad_norm = torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=2.0)

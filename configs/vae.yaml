@@ -7,7 +7,7 @@ data_params:
   data_path: "../../datasets/sageev/20240621-square"
   train_batch_size: 64
   val_batch_size:  64
-  patch_size: 64
+  patch_size: 64 # not used
   num_workers: 4
 
 exp_params:

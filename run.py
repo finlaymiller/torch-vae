@@ -8,14 +8,15 @@ from lightning.pytorch.callbacks import Callback, EarlyStopping, ModelCheckpoint
 from rich import print
 from torchinfo import summary
 import torchvision
-from torch.utils.data import DataLoader
+from torch.utils.data import random_split, DataLoader
 from torchvision.datasets import ImageFolder
 import torchvision.transforms as transforms
 from torchvision.utils import make_grid
 
 from models.vanilla_vae import VanillaVAE
 
-IMG_PATH = "logs/VanillaVAE/reconstructions/reconstruction_0.pt"
+IT = 0
+IMG_PATH = f"logs/VanillaVAE/reconstructions/reconstruction_{IT}.pt"
 
 
 class ReconstructionLogger(Callback):
@@ -104,6 +105,7 @@ def main(config):
     model = VanillaVAE(
         config["model_params"]["in_channels"],
         config["model_params"]["latent_dim"],
+        config["exp_params"],
         hidden_dims=[128, 256, 512, 1024, 2048],
     )
     model.to(device)
@@ -116,11 +118,22 @@ def main(config):
     img_transforms = transforms.Compose(
         [transforms.ToTensor(), transforms.Normalize(mean=[0.5], std=[0.5])]
     )
-    dataset = ImageFolder(config["data_params"]["data_path"], transform=img_transforms)
-    dataloader = DataLoader(
-        dataset,
-        config["data_params"]["train_batch_size"],
+    full_dataset = ImageFolder(
+        config["data_params"]["data_path"], transform=img_transforms
+    )
+    train_size = int(0.8 * len(full_dataset))
+    val_size = len(full_dataset) - train_size
+    train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config["data_params"]["train_batch_size"],
         shuffle=True,
+        num_workers=config["data_params"]["num_workers"],
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=config["data_params"]["val_batch_size"],
+        shuffle=False,
         num_workers=config["data_params"]["num_workers"],
     )
 
@@ -144,27 +157,27 @@ def main(config):
     trainer = L.Trainer(
         logger=logger,
         overfit_batches=1,
-        log_every_n_steps=1,
         # limit_train_batches=100,
+        log_every_n_steps=1,
         accelerator="gpu",
         devices=config["trainer_params"]["devices"],
         max_epochs=config["trainer_params"]["max_epochs"],
         default_root_dir=config["logging_params"]["save_dir"],
         enable_checkpointing=True,
-        # profiler="advanced",
-        val_check_interval=0.1,
+        # val_check_interval=0.1,
+        check_val_every_n_epoch=25,
         callbacks=[
             checkpoint_callback,
             early_stopping_callback,
             reconstruction_callback,
         ],
     )
-    trainer.fit(model=model, train_dataloaders=dataloader)
+    trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=val_loader)
 
     print("training complete, saving video")
     frames = torch.load(IMG_PATH)
     torchvision.io.write_video(
-        "logs/VanillaVAE/videos/reconstruction_0.mp4", frames.cpu(), fps=25
+        f"logs/VanillaVAE/videos/reconstruction_{IT}.mp4", frames.cpu(), fps=25
     )
 
 
