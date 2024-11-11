@@ -4,16 +4,12 @@ import torch
 from torch import optim
 from models import BaseVAE
 from models.types_ import *
-from utils import data_loader
 import pytorch_lightning as pl
 from torchvision import transforms
 import torchvision.utils as vutils
-from torchvision.datasets import CelebA
-from torch.utils.data import DataLoader
 
 
 class VAEXperiment(pl.LightningModule):
-
     def __init__(self,
                  vae_model: BaseVAE,
                  params: dict) -> None:
@@ -23,6 +19,7 @@ class VAEXperiment(pl.LightningModule):
         self.params = params
         self.curr_device = None
         self.hold_graph = False
+        self.automatic_optimization = False
         try:
             self.hold_graph = self.params['retain_first_backpass']
         except:

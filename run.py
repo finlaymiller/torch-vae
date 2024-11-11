@@ -1,72 +1,189 @@
 import os
 import yaml
 import argparse
-import numpy as np
-from pathlib import Path
-from models import *
-from experiment import VAEXperiment
 import torch
-import torch.backends.cudnn as cudnn
-from pytorch_lightning import Trainer
-from pytorch_lightning.loggers import TensorBoardLogger
-from pytorch_lightning import seed_everything
-from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
-from dataset import VAEDataset
-from pytorch_lightning.strategies import DDPStrategy
-from collections import OrderedDict
+import lightning as L
+from lightning.pytorch.loggers import TensorBoardLogger
+from lightning.pytorch.callbacks import Callback, EarlyStopping, ModelCheckpoint
+from rich import print
+from torchinfo import summary
+import torchvision
+from torch.utils.data import DataLoader
+from torchvision.datasets import ImageFolder
+import torchvision.transforms as transforms
+from torchvision.utils import make_grid
+
+from models.vanilla_vae import VanillaVAE
+
+IMG_PATH = "logs/VanillaVAE/reconstructions/reconstruction_0.pt"
 
 
-parser = argparse.ArgumentParser(description='Generic runner for VAE models')
-parser.add_argument('--config',  '-c',
-                    dest="filename",
-                    metavar='FILE',
-                    help =  'path to the config file',
-                    default='configs/vae.yaml')
+class ReconstructionLogger(Callback):
+    """
+    if batch_idx == 100:
+        import matplotlib.pyplot as plt
+        import os
 
-args = parser.parse_args()
-with open(args.filename, 'r') as file:
-    try:
-        config = yaml.safe_load(file)
-    except yaml.YAMLError as exc:
-        print(exc)
+        os.makedirs("logs/plots", exist_ok=True)
+
+        fig, axs = plt.subplots(2, 2)
+        axs[0, 0].imshow(
+            output["input"][0].cpu().detach().numpy().transpose(1, 2, 0)
+        )
+        axs[0, 0].set_title("input")
+        axs[0, 0].axis("off")
+
+        axs[0, 1].imshow(
+            output["output"][0].cpu().detach().numpy().transpose(1, 2, 0)
+        )
+        axs[0, 1].set_title("output")
+        axs[0, 1].axis("off")
+
+        axs[1, 0].imshow(
+            output["encoded"]["pre_latents"][0]
+            .cpu()
+            .detach()
+            .numpy()
+            .reshape((128, 256))
+        )
+        axs[1, 0].set_title("pre-latent")
+        axs[1, 0].axis("off")
+
+        # axs[0, 1].imshow(
+        #     output["latents"][0].cpu().detach().numpy()
+        # )
+        # axs[0, 1].set_title("Latent")
+        # axs[0, 1].axis("off")
+
+        plt.savefig("logs/plots/plot.png")
+        plt.close()
+    """
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        val_samples = next(iter(trainer.train_dataloader))
+        x, _ = val_samples
+        x = x.to(pl_module.device)
+        output = pl_module.forward(x)
+        reconstructions = output["output"]
+        grid = make_grid([x[0], reconstructions[0]])
+
+        tensor_filename = IMG_PATH
+        if os.path.exists(tensor_filename):
+            existing_tensors = torch.load(tensor_filename)
+            new_frame = grid.permute(1, 2, 0).to(torch.uint8)
+            existing_tensors = torch.cat(
+                (existing_tensors, new_frame.unsqueeze(0)), dim=0
+            )
+        else:
+            os.makedirs("logs/VanillaVAE/reconstructions")
+            existing_tensors = grid.permute(1, 2, 0).to(torch.uint8).unsqueeze(0)
+        torch.save(existing_tensors, tensor_filename)
+
+        if trainer.current_epoch % 50 == 0:
+            trainer.logger.experiment.add_image(
+                f"reconstruction {trainer.current_epoch:03d}",
+                grid,
+                global_step=trainer.global_step,
+            )
 
 
-tb_logger =  TensorBoardLogger(save_dir=config['logging_params']['save_dir'],
-                               name=config['model_params']['name'],)
+def main(config):
+    # system setup
+    L.seed_everything(config["exp_params"]["manual_seed"], workers=True)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.autograd.set_detect_anomaly(mode=True)  # type: ignore
+    device = (
+        torch.device(config["trainer_params"]["device"])
+        if torch.cuda.is_available()
+        else torch.device("cpu")
+    )
+    print(f"Device: '{device}'")
 
-# For reproducibility
-seed_everything(config['exp_params']['manual_seed'], True)
-model = vae_models[config['model_params']['name']](**config['model_params'])
+    # model setup
+    model = VanillaVAE(
+        config["model_params"]["in_channels"],
+        config["model_params"]["latent_dim"],
+        hidden_dims=[128, 256, 512, 1024, 2048],
+    )
+    model.to(device)
+    summary(
+        model,
+        input_size=(config["data_params"]["train_batch_size"], 3, 128, 128),
+        device="cuda",
+    )
+    # dataset setup
+    img_transforms = transforms.Compose(
+        [transforms.ToTensor(), transforms.Normalize(mean=[0.5], std=[0.5])]
+    )
+    dataset = ImageFolder(config["data_params"]["data_path"], transform=img_transforms)
+    dataloader = DataLoader(
+        dataset,
+        config["data_params"]["train_batch_size"],
+        shuffle=True,
+        num_workers=config["data_params"]["num_workers"],
+    )
 
-if 'resume_training' in config['logging_params'] and config['logging_params']['resume_training']:
-    checkpoint = torch.load(config['custom_params']['resume_chkpt_path'])
-    state_dict = checkpoint['state_dict']
-    new_state_dict = OrderedDict()
-    for k, v in state_dict.items():
-        new_state_dict[k.replace("model.", "")] = v
-    model.load_state_dict(new_state_dict)
+    # lightning setup
+    logger = TensorBoardLogger(
+        save_dir=config["logging_params"]["save_dir"],
+        name=config["logging_params"]["name"],
+    )
+    checkpoint_callback = ModelCheckpoint(
+        monitor="val_loss",
+        filename="best_model",
+        save_top_k=1,
+        mode="min",
+    )
+    early_stopping_callback = EarlyStopping(
+        monitor="val_loss",
+        patience=5,
+        mode="min",
+    )
+    reconstruction_callback = ReconstructionLogger()
+    trainer = L.Trainer(
+        logger=logger,
+        overfit_batches=1,
+        log_every_n_steps=1,
+        # limit_train_batches=100,
+        accelerator="gpu",
+        devices=config["trainer_params"]["devices"],
+        max_epochs=config["trainer_params"]["max_epochs"],
+        default_root_dir=config["logging_params"]["save_dir"],
+        enable_checkpointing=True,
+        # profiler="advanced",
+        val_check_interval=0.1,
+        callbacks=[
+            checkpoint_callback,
+            early_stopping_callback,
+            reconstruction_callback,
+        ],
+    )
+    trainer.fit(model=model, train_dataloaders=dataloader)
 
-experiment = VAEXperiment(model,
-                          config['exp_params'])
-
-data = VAEDataset(**config["data_params"], pin_memory=len(config['trainer_params']['gpus']) != 0)
-
-data.setup()
-runner = Trainer(logger=tb_logger,
-                 callbacks=[
-                     LearningRateMonitor(),
-                     ModelCheckpoint(save_top_k=2, 
-                                     dirpath=os.path.join(tb_logger.log_dir, "checkpoints"), 
-                                     monitor="val_loss",
-                                     save_last=True),
-                 ],
-                 strategy=DDPStrategy(find_unused_parameters=False),  # Updated usage
-                 **config['trainer_params'])
+    print("training complete, saving video")
+    frames = torch.load(IMG_PATH)
+    torchvision.io.write_video(
+        "logs/VanillaVAE/videos/reconstruction_0.mp4", frames.cpu(), fps=25
+    )
 
 
-Path(f"{tb_logger.log_dir}/Samples").mkdir(exist_ok=True, parents=True)
-Path(f"{tb_logger.log_dir}/Reconstructions").mkdir(exist_ok=True, parents=True)
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Generic runner for VAE models")
+    parser.add_argument(
+        "--config",
+        "-c",
+        dest="filename",
+        metavar="FILE",
+        help="path to the config file",
+        default="configs/vae.yaml",
+    )
 
+    args = parser.parse_args()
+    with open(args.filename, "r") as file:
+        try:
+            config = yaml.safe_load(file)
+        except yaml.YAMLError as exc:
+            print(exc)
 
-print(f"======= Training {config['model_params']['name']} =======")
-runner.fit(experiment, datamodule=data)
+    main(config)

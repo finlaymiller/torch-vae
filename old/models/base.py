@@ -1,8 +1,9 @@
-from torch import nn, Tensor
+from .types_ import *
+from torch import nn
 from abc import abstractmethod
-from typing import Any, List
 
 class BaseVAE(nn.Module):
+    
     def __init__(self) -> None:
         super(BaseVAE, self).__init__()
 
