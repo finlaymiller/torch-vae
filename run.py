@@ -9,13 +9,13 @@ from rich import print
 from torchinfo import summary
 import torchvision
 from torch.utils.data import random_split, DataLoader
-from torchvision.datasets import ImageFolder
+from torchvision.datasets import ImageFolder, MNIST
 import torchvision.transforms as transforms
 from torchvision.utils import make_grid
 
 from models.vanilla_vae import VanillaVAE
 
-IT = 0
+IT = 3
 IMG_PATH = f"logs/VanillaVAE/reconstructions/reconstruction_{IT}.pt"
 
 
@@ -61,11 +61,16 @@ class ReconstructionLogger(Callback):
     """
 
     def on_train_epoch_end(self, trainer, pl_module):
-        val_samples = next(iter(trainer.train_dataloader))
+        val_samples = next(iter(trainer.train_dataloader))  # type: ignore
         x, _ = val_samples
         x = x.to(pl_module.device)
         output = pl_module.forward(x)
         reconstructions = output["output"]
+        # y, _ = next(iter(trainer.val_dataloaders))  # type: ignore
+        # y = y.to(pl_module.device)
+        # output = pl_module.forward(y)
+        # val_reconst = output["output"]
+        # grid = make_grid([x[0], reconstructions[0], y[0], val_reconst[0]])
         grid = make_grid([x[0], reconstructions[0]])
 
         tensor_filename = IMG_PATH
@@ -76,16 +81,16 @@ class ReconstructionLogger(Callback):
                 (existing_tensors, new_frame.unsqueeze(0)), dim=0
             )
         else:
-            os.makedirs("logs/VanillaVAE/reconstructions")
+            os.makedirs("logs/VanillaVAE/reconstructions", exist_ok=True)
             existing_tensors = grid.permute(1, 2, 0).to(torch.uint8).unsqueeze(0)
         torch.save(existing_tensors, tensor_filename)
 
-        if trainer.current_epoch % 50 == 0:
-            trainer.logger.experiment.add_image(
-                f"reconstruction {trainer.current_epoch:03d}",
-                grid,
-                global_step=trainer.global_step,
-            )
+        # if trainer.current_epoch % 50 == 0:
+        trainer.logger.experiment.add_image(
+            f"reconstruction {trainer.current_epoch:03d}",
+            grid,
+            global_step=trainer.global_step,
+        )
 
 
 def main(config):
@@ -106,21 +111,37 @@ def main(config):
         config["model_params"]["in_channels"],
         config["model_params"]["latent_dim"],
         config["exp_params"],
-        hidden_dims=[128, 256, 512, 1024, 2048],
+        hidden_dims=config["model_params"]["hidden_dims"],
     )
     model.to(device)
     summary(
         model,
-        input_size=(config["data_params"]["train_batch_size"], 3, 128, 128),
-        device="cuda",
+        input_size=(
+            config["data_params"]["train_batch_size"],
+            1,
+            28,
+            28,
+        ),  # 3, 128, 128),
+        device=device.type,
     )
     # dataset setup
     img_transforms = transforms.Compose(
-        [transforms.ToTensor(), transforms.Normalize(mean=[0.5], std=[0.5])]
+        [
+            transforms.Grayscale(num_output_channels=1),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0], std=[1]),
+        ]
     )
+    # full_dataset = torchvision.datasets.MNIST(
+    #     root="/media/nova/Datasets/mnist",
+    #     train=True,
+    #     download=False,
+    #     transform=img_transforms,
+    # )
     full_dataset = ImageFolder(
         config["data_params"]["data_path"], transform=img_transforms
     )
+    print(f"loaded {len(full_dataset)} images")
     train_size = int(0.8 * len(full_dataset))
     val_size = len(full_dataset) - train_size
     train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
@@ -156,16 +177,16 @@ def main(config):
     reconstruction_callback = ReconstructionLogger()
     trainer = L.Trainer(
         logger=logger,
-        overfit_batches=1,
+        # overfit_batches=1,
         # limit_train_batches=100,
-        log_every_n_steps=1,
+        log_every_n_steps=config["logging_params"]["log_interval"],
         accelerator="gpu",
         devices=config["trainer_params"]["devices"],
         max_epochs=config["trainer_params"]["max_epochs"],
         default_root_dir=config["logging_params"]["save_dir"],
         enable_checkpointing=True,
         # val_check_interval=0.1,
-        check_val_every_n_epoch=25,
+        check_val_every_n_epoch=config["trainer_params"]["check_val_interval"],
         callbacks=[
             checkpoint_callback,
             early_stopping_callback,

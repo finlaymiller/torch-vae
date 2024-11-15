@@ -1,29 +1,33 @@
 model_params:
   name: 'VanillaVAE'
-  in_channels: 3
-  latent_dim: 128
+  in_channels: 1 # 3
+  latent_dim: 10 #128
+  hidden_dims: [32, 64, 128, 256, 512] # [128, 256, 512, 1024, 2048]
 
 data_params:
-  data_path: "../../datasets/sageev/20240621-square"
-  train_batch_size: 64
-  val_batch_size:  64
+  # data_path: "../../datasets/sageev/20240621-square"
+  data_path: "/media/nova/Datasets/vae-lines"
+  train_batch_size: 128 #64
+  val_batch_size:  128 #64
   patch_size: 64 # not used
   num_workers: 4
 
 exp_params:
-  learning_rate: 0.005
-  weight_decay: 0.0
-  scheduler_gamma: 0.95
+  learning_rate: 0.001
+  weight_decay: 0.00001
+  scheduler_gamma: 0.1 #0.95
   kld_weight: 0.00025
   manual_seed: 0
 
 trainer_params:
   devices: [1]
-  max_epochs: 400
+  max_epochs: 100
+  check_val_interval: 10
   device: "cuda:1"
 
 logging_params:
   save_dir: "logs/"
   name: "VanillaVAE"
+  log_interval: 10
   resume_training: false
   resume_chkpt_path: ""

@@ -24,41 +24,32 @@ class VanillaVAE(L.LightningModule):
         linear Module which "learns" the log-var vector of the latents distribution
     """
 
-    def __init__(
-        self,
-        in_channels: int,
-        latent_dim: int,
-        exp_params,
-        hidden_dims: List | None = None,
-        **kwargs,
-    ) -> None:
-        super().__init__()
+    def __init__(self, in_channels, latent_dim, exp_params, hidden_dims=None, **kwargs):
+        super(VanillaVAE, self).__init__()
 
+        self.save_hyperparameters()
+
+        self.latent_dim = latent_dim
         self.exp_params = exp_params
 
-        self.last_conv_size = 4
-        self.latent_dim = latent_dim
         if hidden_dims is None:
-            self.hidden_dims = [32, 64, 128, 256, 512]
-        else:
-            self.hidden_dims = hidden_dims
-        self.fc_mu = nn.Linear(
-            self.hidden_dims[-1] * self.last_conv_size**2, latent_dim
-        )
-        self.fc_var = nn.Linear(
-            self.hidden_dims[-1] * self.last_conv_size**2, latent_dim
-        )
+            hidden_dims = [32, 64, 128, 256, 512]
+        self.hidden_dims = hidden_dims
+        decoder_hidden_dims = self.hidden_dims[::-1]
 
-        # build encoder
+        # Encoder
         modules = []
-        for h_dim in self.hidden_dims:
+        for i, h_dim in enumerate(hidden_dims):
+            stride = 2
+            if i == len(hidden_dims) - 1:
+                stride = 1  # Set stride=1 for the last layer to prevent size reduction
             modules.append(
                 nn.Sequential(
                     nn.Conv2d(
                         in_channels,
                         out_channels=h_dim,
                         kernel_size=3,
-                        stride=2,
+                        stride=stride,
                         padding=1,
                     ),
                     nn.BatchNorm2d(h_dim),
@@ -66,50 +57,79 @@ class VanillaVAE(L.LightningModule):
                 )
             )
             in_channels = h_dim
-        self.encoder = nn.Sequential(*modules)
 
-        # build decoder
+        self.encoder = nn.Sequential(*modules)
+        self.flatten = nn.Flatten()
+        self.fc_mu = nn.Linear(2048, latent_dim)
+        self.fc_var = nn.Linear(2048, latent_dim)
+
+        # Decoder
+        # Build Decoder
         modules = []
-        self.decoder_input = nn.Linear(
-            latent_dim, self.hidden_dims[-1] * self.last_conv_size**2
-        )
-        self.hidden_dims.reverse()
-        for i in range(len(self.hidden_dims) - 1):
+        # self.decoder_input = nn.Linear(latent_dim, 2048)
+        self.decoder_input = nn.Linear(latent_dim, self.hidden_dims[-1] * 4)
+        for i in range(len(decoder_hidden_dims) - 1):
+            stride = 2
+            padding = 1
+            if i == len(decoder_hidden_dims) - 2:
+                # Adjust the padding for the second last layer
+                padding = 3
             modules.append(
                 nn.Sequential(
                     nn.ConvTranspose2d(
-                        self.hidden_dims[i],
-                        self.hidden_dims[i + 1],
-                        kernel_size=3,
-                        stride=2,
-                        padding=1,
-                        output_padding=1,
+                        decoder_hidden_dims[i],
+                        decoder_hidden_dims[i + 1],
+                        kernel_size=4,
+                        stride=stride,
+                        padding=padding,
+                        output_padding=0,
                     ),
-                    nn.BatchNorm2d(self.hidden_dims[i + 1]),
+                    nn.BatchNorm2d(decoder_hidden_dims[i + 1]),
                     nn.LeakyReLU(),
                 )
             )
         self.decoder = nn.Sequential(*modules)
 
-        # build final layer
         self.final_layer = nn.Sequential(
-            nn.ConvTranspose2d(
-                self.hidden_dims[-1],
-                self.hidden_dims[-1],
-                kernel_size=3,
-                stride=2,
-                padding=1,
-                output_padding=1,
+            nn.Conv2d(
+                decoder_hidden_dims[-1], out_channels=1, kernel_size=3, padding=1
             ),
-            nn.BatchNorm2d(self.hidden_dims[-1]),
-            nn.LeakyReLU(),
-            nn.Conv2d(self.hidden_dims[-1], out_channels=3, kernel_size=3, padding=1),
-            nn.Sigmoid(),
+            nn.Tanh(),
         )
+        # modules = []
+        # hidden_dims.reverse()
+        # for i in range(len(hidden_dims) - 1):
+        #     modules.append(
+        #         nn.Sequential(
+        #             nn.ConvTranspose2d(
+        #                 hidden_dims[i],
+        #                 hidden_dims[i + 1],
+        #                 kernel_size=3,
+        #                 stride=2,
+        #                 padding=1,
+        #                 output_padding=1,
+        #             ),
+        #             nn.BatchNorm2d(hidden_dims[i + 1]),
+        #             nn.LeakyReLU(),
+        #         )
+        #     )
 
-        self.hidden_dims.reverse()
-        self.apply(self._weights_init)
-        self.save_hyperparameters()
+        # self.decoder = nn.Sequential(*modules)
+
+        # self.final_layer = nn.Sequential(
+        #     nn.ConvTranspose2d(
+        #         hidden_dims[-1],
+        #         hidden_dims[-1],
+        #         kernel_size=3,
+        #         stride=2,
+        #         padding=1,
+        #         output_padding=1,
+        #     ),
+        #     nn.BatchNorm2d(hidden_dims[-1]),
+        #     nn.LeakyReLU(),
+        #     nn.Conv2d(hidden_dims[-1], out_channels=1, kernel_size=3, padding=1),
+        #     nn.Tanh(),
+        # )
 
     def encode(self, input: Tensor) -> EncoderOutput:
         """
@@ -123,7 +143,7 @@ class VanillaVAE(L.LightningModule):
 
         # Split the result into mu and var components
         mu = self.fc_mu(result)
-        log_var = self.fc_var(result)  # + 1e-8 # to avoid Inf
+        log_var = self.fc_var(result) + 1e-8  # to avoid Inf
 
         return EncoderOutput(mu=mu, log_var=log_var, pre_latents=result)
 
@@ -135,9 +155,8 @@ class VanillaVAE(L.LightningModule):
         :return: (Tensor) [B x C x H x W]
         """
         result = self.decoder_input(z)
-        result = result.view(
-            -1, self.hidden_dims[-1], self.last_conv_size, self.last_conv_size
-        )
+        result = result.view(-1, 512, 2, 2)  # self.last_conv_size, self.last_conv_size
+
         result = self.decoder(result)
         result = self.final_layer(result)
         return result
@@ -225,7 +244,7 @@ class VanillaVAE(L.LightningModule):
     def configure_optimizers(self):
         optimizer = optim.Adam(
             self.parameters(),
-            lr=self.exp_params["laerning_rate"],
+            lr=self.exp_params["learning_rate"],
             weight_decay=self.exp_params["weight_decay"],
         )
         scheduler = optim.lr_scheduler.StepLR(
