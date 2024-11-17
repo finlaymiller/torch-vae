@@ -15,7 +15,7 @@ from torchvision.utils import make_grid
 
 from models.vanilla_vae import VanillaVAE
 
-IT = 3
+IT = 7
 IMG_PATH = f"logs/VanillaVAE/reconstructions/reconstruction_{IT}.pt"
 
 
@@ -118,16 +118,17 @@ def main(config):
         model,
         input_size=(
             config["data_params"]["train_batch_size"],
-            1,
-            28,
-            28,
-        ),  # 3, 128, 128),
+            # 1, 28, 28,
+            3,
+            128,
+            128,
+        ),
         device=device.type,
     )
     # dataset setup
     img_transforms = transforms.Compose(
         [
-            transforms.Grayscale(num_output_channels=1),
+            # transforms.Grayscale(num_output_channels=1),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0], std=[1]),
         ]
