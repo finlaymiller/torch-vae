@@ -33,7 +33,7 @@ def generate_line_images(
     generated_images = set()
 
     # generate images
-    for i in track(range(num_images)):
+    for i in track(range(num_images), "generating images"):
         img = np.zeros((height, width), dtype=np.uint8)
         num_lines = np.random.randint(1, max_lines + 1)
 

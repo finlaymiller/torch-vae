@@ -5,7 +5,7 @@ import torch.nn.init as init
 from typing import List
 import lightning as L
 
-from utils.types_helpers import EncoderOutput, ModelOutput, LossOutput
+from types_helpers import EncoderOutput, ModelOutput, LossOutput
 
 
 class VanillaVAE(L.LightningModule):
