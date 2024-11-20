@@ -20,11 +20,11 @@ def generate_line_images(
     Args:
         num_images (int): Number of images to generate.
         output_path (str): Directory to store the generated images.
-        img_size (tuple): Height and width of the images as (height, width). Default is (28, 28).
-        max_lines (int): Maximum number of lines allowed per image. Default is 2.
-        line_width (int): Line width in pixels. Random (1-5) if set to 0. Default is 1.
-        full_length (bool): Whether all lines should span the entire image. Default is True.
-        filter_duplicates (bool): Whether to filter out duplicate images. Default is True.
+        img_size (tuple): Height and width of the images as (height, width). Default: (28, 28)
+        max_lines (int): Maximum number of lines allowed per image. Default: 2
+        line_width (int): Line width in pixels. Random (1-5) if set to 0. Default: 1
+        full_length (bool): Whether all lines should span the entire image. Default: True
+        filter_duplicates (bool): Whether to filter out duplicate images. Default: True
     """
     if not os.path.exists(output_path):
         os.makedirs(output_path)
