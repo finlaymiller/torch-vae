@@ -2,13 +2,11 @@ import torch
 from torch import nn, Tensor, optim
 from torch.nn import functional as F
 import torch.nn.init as init
-from typing import List
-import lightning as L
 
 from types_helpers import EncoderOutput, ModelOutput, LossOutput
 
 
-class VanillaVAE(L.LightningModule):
+class VanillaVAE(nn.Module):
     """Implementation of the classical VAE
     latent_dim: int
         dimension of the latent space
@@ -140,9 +138,7 @@ class VanillaVAE(L.LightningModule):
     def forward(self, input: Tensor) -> ModelOutput:
         encoding = self.encode(input)
         z = self.reparameterize(encoding["mu"], encoding["log_var"])
-        return ModelOutput(
-            output=self.decode(z), input=input, encoded=encoding, latents=z
-        )
+        return ModelOutput(output=self.decode(z), input=input, encoded=encoding, latents=z)
 
     def loss(self, output_model: ModelOutput):
         r"""
@@ -156,10 +152,7 @@ class VanillaVAE(L.LightningModule):
         log_var = torch.clamp(output_model["encoded"]["log_var"], min=-10, max=10)
         log_var_exp = (log_var + 1e-8).exp()
         kld_loss = torch.mean(
-            -0.5
-            * torch.sum(
-                1 + log_var - output_model["encoded"]["mu"] ** 2 - log_var_exp, dim=1
-            ),
+            -0.5 * torch.sum(1 + log_var - output_model["encoded"]["mu"] ** 2 - log_var_exp, dim=1),
             dim=0,
         )  # TODO move this to its own fn
         loss = recons_loss + self.exp_params["kld_weight"] * kld_loss
@@ -211,9 +204,7 @@ class VanillaVAE(L.LightningModule):
             lr=self.exp_params["learning_rate"],
             weight_decay=self.exp_params["weight_decay"],
         )
-        scheduler = optim.lr_scheduler.StepLR(
-            optimizer, step_size=10, gamma=self.exp_params["scheduler_gamma"]
-        )
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=self.exp_params["scheduler_gamma"])
         return {
             "optimizer": optimizer,
             "gradient_clip_val": 1.0,

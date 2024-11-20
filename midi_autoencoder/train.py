@@ -1,63 +1,22 @@
 import os
 import torch
-import lightning as L
-from lightning.pytorch.loggers import TensorBoardLogger
-from lightning.pytorch.callbacks import Callback, EarlyStopping, ModelCheckpoint
 from rich import print
-from torchinfo import summary
 import torchvision
 from torch.utils.data import random_split, DataLoader
 from torchvision.datasets import ImageFolder, MNIST
 import torchvision.transforms as transforms
-from torchvision.utils import make_grid
 
 from model import VanillaVAE
 
-class ReconstructionLogger(Callback):
-    def on_train_epoch_end(self, trainer, pl_module):
-        val_samples = next(iter(trainer.train_dataloader))  # type: ignore
-        x, _ = val_samples
-        x = x.to(pl_module.device)
-        output = pl_module.forward(x)
-        reconstructions = output["output"]
-        # y, _ = next(iter(trainer.val_dataloaders))  # type: ignore
-        # y = y.to(pl_module.device)
-        # output = pl_module.forward(y)
-        # val_reconst = output["output"]
-        # grid = make_grid([x[0], reconstructions[0], y[0], val_reconst[0]])
-        grid = make_grid([x[0], reconstructions[0]]) # TODO: break out this functionality, dump first sample to console, latent vars, output
-
-        tensor_filename = IMG_PATH
-        if os.path.exists(tensor_filename):
-            existing_tensors = torch.load(tensor_filename)
-            new_frame = grid.permute(1, 2, 0).to(torch.uint8)
-            existing_tensors = torch.cat(
-                (existing_tensors, new_frame.unsqueeze(0)), dim=0
-            )
-        else:
-            os.makedirs("logs/VanillaVAE/reconstructions", exist_ok=True)
-            existing_tensors = grid.permute(1, 2, 0).to(torch.uint8).unsqueeze(0)
-        torch.save(existing_tensors, tensor_filename)
-
-        # if trainer.current_epoch % 50 == 0:
-        trainer.logger.experiment.add_image(
-            f"reconstruction {trainer.current_epoch:03d}",
-            grid,
-            global_step=trainer.global_step,
-        )
+BASE_BATCH_SIZE = 128
 
 
 def main(config):
     # system setup
-    L.seed_everything(config["exp_params"]["manual_seed"], workers=True)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     torch.autograd.set_detect_anomaly(mode=True)  # type: ignore
-    device = (
-        torch.device(config["trainer_params"]["device"])
-        if torch.cuda.is_available()
-        else torch.device("cpu")
-    )
+    device = torch.device(config["trainer_params"]["device"]) if torch.cuda.is_available() else torch.device("cpu")
     print(f"Device: '{device}'")
 
     # model setup
@@ -68,19 +27,7 @@ def main(config):
         hidden_dims=config["model_params"]["hidden_dims"],
     )
     model.to(device)
-    summary(
-        model,
-        input_size=(
-            config["data_params"]["train_batch_size"],
-            config["model_params"]["in_channels"],
-            28,
-            28,
-            # 3,
-            # 128,
-            # 128,
-        ),
-        device=device.type,
-    )
+    # TODO: summarize model here
     # dataset setup
     img_transforms = transforms.Compose(
         [
@@ -154,9 +101,8 @@ def main(config):
 
     print("training complete, saving video")
     frames = torch.load(IMG_PATH)
-    torchvision.io.write_video(
-        f"logs/VanillaVAE/videos/reconstruction_{IT}.mp4", frames.cpu(), fps=25
-    )
+    torchvision.io.write_video(f"logs/VanillaVAE/videos/reconstruction_{IT}.mp4", frames.cpu(), fps=25)
+
 
 def run(config):
     """
@@ -837,6 +783,7 @@ def run(config):
     if config.log_wandb and config.global_rank == 0:
         wandb.log({**{f"Eval/Train/{k}": v for k, v in eval_stats.items()}}, step=total_step)
 
+
 def get_parser():
     r"""
     Build argument parser for the command line interface.
@@ -1132,6 +1079,7 @@ def get_parser():
 
     return parser
 
+
 def cli():
     r"""Command-line interface for model training."""
     parser = get_parser()
@@ -1142,6 +1090,7 @@ def cli():
     del config.disable_wandb
     # Set protoval_split_id from prototyping, and turn prototyping into a bool
     config.prototyping = config.protoval_split_id is not None
+    print(f"loaded with arguments:\n{config}")
     return run(config)
 
 

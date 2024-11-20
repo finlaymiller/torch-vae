@@ -1,4 +1,5 @@
 #!/bin/bash
+# run parameters
 
 # Manually define the project name.
 # This must also be the name of your conda environment used for this project.
@@ -15,12 +16,7 @@ start_time="$SECONDS"
 echo "-------- Input handling ------------------------------------------------"
 date
 echo ""
-# Use the SLURM job array to select the seed for the experiment
-SEED="$SLURM_ARRAY_TASK_ID"
-if [[ "$SEED" == "" ]];
-then
-    SEED=0
-fi
+SEED=0
 echo "SEED = $SEED"
 
 # Check if the first argument is a path to the python script to run
@@ -70,9 +66,8 @@ source "$PROJECT_DIRN/scripts/report_env_config.sh"
 echo "-------- Setting JOB_LABEL ---------------------------------------------"
 echo ""
 # Decide the name of the paths to use for saving this job
-SLURM_JOB_NAME=$PROJECT_NAME
 JOB_ID=$(date +"%Y%m%d%H%M%S")
-JOB_LABEL="${SLURM_JOB_NAME}__${JOB_ID}";
+JOB_LABEL="${PROJECT_NAME}__${JOB_ID}";
 echo "JOB_ID = $JOB_ID"
 echo "JOB_LABEL = $JOB_LABEL"
 echo ""
@@ -96,32 +91,20 @@ echo ""
 # Create a symlink to the job's checkpoint directory within a subfolder of the
 # current directory (repository directory) named "checkpoint_working".
 mkdir -p "checkpoints_working"
-ln -sfn "$CKPT_DIR" "$PWD/checkpoints_working/$SLURM_JOB_NAME"
+ln -sfn "$CKPT_DIR" "$PWD/checkpoints_working/$JOB_NAME"
 # Specify an output directory to place checkpoints for long term storage once
 # the job is finished.
-if [[ -d "/scratch/hdd001/home/$SLURM_JOB_USER" ]];
+# Directory OUTPUT_DIR will contain all completed jobs for this project.
+OUTPUT_DIR="checkpoints/$PROJECT_NAME"
+# Subdirectory JOB_OUTPUT_DIR will contain the outputs from this job.
+JOB_OUTPUT_DIR="$OUTPUT_DIR/$JOB_LABEL"
+echo "JOB_OUTPUT_DIR = $JOB_OUTPUT_DIR"
+if [[ -d "$JOB_OUTPUT_DIR" ]];
 then
-    OUTPUT_DIR="/scratch/hdd001/home/$SLURM_JOB_USER"
-elif [[ -d "/scratch/ssd004/scratch/$SLURM_JOB_USER" ]];
-then
-    OUTPUT_DIR="/scratch/ssd004/scratch/$SLURM_JOB_USER"
-else
-    OUTPUT_DIR="."
+    echo "Current contents of ${JOB_OUTPUT_DIR}"
+    ls -lh "${JOB_OUTPUT_DIR}"
 fi
-if [[ "$OUTPUT_DIR" != "" ]];
-then
-    # Directory OUTPUT_DIR will contain all completed jobs for this project.
-    OUTPUT_DIR="$OUTPUT_DIR/checkpoints/$PROJECT_NAME"
-    # Subdirectory JOB_OUTPUT_DIR will contain the outputs from this job.
-    JOB_OUTPUT_DIR="$OUTPUT_DIR/$JOB_LABEL"
-    echo "JOB_OUTPUT_DIR = $JOB_OUTPUT_DIR"
-    if [[ -d "$JOB_OUTPUT_DIR" ]];
-    then
-        echo "Current contents of ${JOB_OUTPUT_DIR}"
-        ls -lh "${JOB_OUTPUT_DIR}"
-    fi
-    echo ""
-fi
+echo ""
 
 # Save a list of installed packages and their versions to a file in the output directory
 conda env export > "$CKPT_DIR/environment.yml"
@@ -129,22 +112,21 @@ pip freeze > "$CKPT_DIR/frozen-requirements.txt"
 echo ""
 echo "------------------------------------------------------------------------"
 elapsed=$(( SECONDS - start_time ))
-eval "echo Running total elapsed time for restart $SLURM_RESTART_COUNT: $(date -ud "@$elapsed" +'$((%s/3600/24)) days %H hr %M min %S sec')"
 echo ""
 echo "-------- Begin main script ---------------------------------------------"
 date
 echo ""
 
 # Multi-GPU configuration
-SLURM_JOB_NUM_NODES=1
-SLURM_GPUS_ON_NODE=1
-SLURM_CPUS_PER_GPU=4
+NUM_NODES=1
+NUM_GPUS=1
+NUM_WORKERS=4
 echo ""
-if [[ "$SLURM_JOB_NUM_NODES" == "1" ]];
+if [[ "$NUM_NODES" == "1" ]];
 then
-    echo "Single ($SLURM_JOB_NUM_NODES) node training ($SLURM_GPUS_ON_NODE GPUs)"
+    echo "Single ($NUM_NODES) node training ($NUM_GPUS GPUs)"
 else
-    echo "Multiple ($SLURM_JOB_NUM_NODES) node training (x$SLURM_GPUS_ON_NODE GPUs per node)"
+    echo "Multiple ($NUM_NODES) node training (x$NUM_GPUS GPUs per node)"
 fi
 echo ""
 
@@ -166,13 +148,13 @@ echo ""
 # signal will be ignored.
 torchrun \
     "$SCRIPT_PATH" \
-    --nnodes="$SLURM_JOB_NUM_NODES" \
-    --nproc_per_node="$SLURM_GPUS_ON_NODE" \
-    --cpu-workers="$SLURM_CPUS_PER_GPU" \
+    --nnodes="$NUM_NODES" \
+    --nproc_per_node="$NUM_GPUS" \
+    --cpu-workers="$NUM_WORKERS" \
     --seed="$SEED" \
     --checkpoint="$CKPT_PTH" \
     --log-wandb \
-    --run-name="$SLURM_JOB_NAME" \
+    --run-name="$JOB_NAME" \
     --run-id="$JOB_ID" \
     "${@}" &
 child="$!"
@@ -185,7 +167,7 @@ eval "echo Running total elapsed time for restart $SLURM_RESTART_COUNT: $(date -
 echo ""
 # Now the job is finished, remove the symlink to the job's checkpoint directory
 # from checkpoints_working
-rm "$PWD/checkpoints_working/$SLURM_JOB_NAME"
+rm "$PWD/checkpoints_working/$JOB_NAME"
 # By overriding the JOB_OUTPUT_DIR environment variable, we disable saving
 # checkpoints to long-term storage. This is disabled by default to preserve
 # disk space. When you are sure your job config is correct and you are sure
@@ -217,7 +199,7 @@ fi
 echo ""
 echo "------------------------------------------------------------------------"
 echo ""
-echo "Job $SLURM_JOB_NAME ($SLURM_JOB_ID) finished, submitted from $SLURM_SUBMIT_HOST ($SLURM_CLUSTER_NAME)"
+echo "Job $JOB_NAME ($JOB_ID) finished"
 date
 echo "------------------------------------"
 elapsed=$(( SECONDS - start_time ))
