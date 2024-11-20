@@ -20,46 +20,6 @@ IMG_PATH = f"logs/VanillaVAE/reconstructions/reconstruction_{IT}.pt"
 
 
 class ReconstructionLogger(Callback):
-    """
-    if batch_idx == 100:
-        import matplotlib.pyplot as plt
-        import os
-
-        os.makedirs("logs/plots", exist_ok=True)
-
-        fig, axs = plt.subplots(2, 2)
-        axs[0, 0].imshow(
-            output["input"][0].cpu().detach().numpy().transpose(1, 2, 0)
-        )
-        axs[0, 0].set_title("input")
-        axs[0, 0].axis("off")
-
-        axs[0, 1].imshow(
-            output["output"][0].cpu().detach().numpy().transpose(1, 2, 0)
-        )
-        axs[0, 1].set_title("output")
-        axs[0, 1].axis("off")
-
-        axs[1, 0].imshow(
-            output["encoded"]["pre_latents"][0]
-            .cpu()
-            .detach()
-            .numpy()
-            .reshape((128, 256))
-        )
-        axs[1, 0].set_title("pre-latent")
-        axs[1, 0].axis("off")
-
-        # axs[0, 1].imshow(
-        #     output["latents"][0].cpu().detach().numpy()
-        # )
-        # axs[0, 1].set_title("Latent")
-        # axs[0, 1].axis("off")
-
-        plt.savefig("logs/plots/plot.png")
-        plt.close()
-    """
-
     def on_train_epoch_end(self, trainer, pl_module):
         val_samples = next(iter(trainer.train_dataloader))  # type: ignore
         x, _ = val_samples
@@ -71,7 +31,7 @@ class ReconstructionLogger(Callback):
         # output = pl_module.forward(y)
         # val_reconst = output["output"]
         # grid = make_grid([x[0], reconstructions[0], y[0], val_reconst[0]])
-        grid = make_grid([x[0], reconstructions[0]])
+        grid = make_grid([x[0], reconstructions[0]]) # TODO: break out this functionality, dump first sample to console, latent vars, output
 
         tensor_filename = IMG_PATH
         if os.path.exists(tensor_filename):
@@ -118,30 +78,32 @@ def main(config):
         model,
         input_size=(
             config["data_params"]["train_batch_size"],
-            # 1, 28, 28,
-            3,
-            128,
-            128,
+            config["model_params"]["in_channels"],
+            28,
+            28,
+            # 3,
+            # 128,
+            # 128,
         ),
         device=device.type,
     )
     # dataset setup
     img_transforms = transforms.Compose(
         [
-            # transforms.Grayscale(num_output_channels=1),
+            transforms.Grayscale(),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0], std=[1]),
+            # transforms.Normalize(mean=[0], std=[1]), # TODO: properly standardize (mean=0.5)
         ]
     )
-    # full_dataset = torchvision.datasets.MNIST(
-    #     root="/media/nova/Datasets/mnist",
-    #     train=True,
-    #     download=False,
-    #     transform=img_transforms,
-    # )
-    full_dataset = ImageFolder(
-        config["data_params"]["data_path"], transform=img_transforms
+    full_dataset = torchvision.datasets.MNIST(
+        root="/media/nova/Datasets/mnist",
+        train=True,
+        download=False,
+        transform=img_transforms,
     )
+    # full_dataset = ImageFolder(
+    #     config["data_params"]["data_path"], transform=img_transforms
+    # )
     print(f"loaded {len(full_dataset)} images")
     train_size = int(0.8 * len(full_dataset))
     val_size = len(full_dataset) - train_size

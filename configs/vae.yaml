@@ -1,15 +1,15 @@
 model_params:
   name: 'VanillaVAE'
-  in_channels: 3
-  latent_dim: 128
+  in_channels: 1
+  latent_dim: 10
   hidden_dims: [32, 64, 128, 256] # MNIST
   # hidden_dims: [128, 256, 512, 1024]
 
 data_params:
   data_path: "../../datasets/sageev/20240621-square"
   # data_path: "/media/nova/Datasets/vae-lines"
-  train_batch_size: 128 #64
-  val_batch_size:  128 #64
+  train_batch_size: 100
+  val_batch_size:  100
   patch_size: 64 # not used
   num_workers: 4
 

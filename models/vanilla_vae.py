@@ -60,32 +60,9 @@ class VanillaVAE(L.LightningModule):
             nn.LeakyReLU(True),
             nn.Flatten(),  # 16384
         )
-        # modules = []
-        # for i, h_dim in enumerate(hidden_dims):
-        #     stride = 2
-        #     # if i == len(hidden_dims) - 1:
-        #     #     stride = 1  # Set stride=1 for the last layer to prevent size reduction
-        #     modules.append(
-        #         nn.Sequential(
-        #             nn.Conv2d(
-        #                 in_channels,
-        #                 out_channels=h_dim,
-        #                 kernel_size=4,
-        #                 stride=2,
-        #                 padding=1,
-        #             ),
-        #             nn.BatchNorm2d(h_dim),
-        #             nn.LeakyReLU(),
-        #         )
-        #     )
-        #     in_channels = h_dim
 
-        # self.encoder = nn.Sequential(*modules)
         self.fc_mu = nn.Linear(256 * 8 * 8, latent_dim)
         self.fc_var = nn.Linear(256 * 8 * 8, latent_dim)
-        # self.fc_mu = nn.Linear(2048, latent_dim)
-        # self.fc_var = nn.Linear(2048, latent_dim)
-        # self.flatten = nn.Flatten()
 
         # Decoder
         self.decoder_input = nn.Linear(latent_dim, 256 * 8 * 8)
@@ -111,73 +88,6 @@ class VanillaVAE(L.LightningModule):
             nn.LeakyReLU(True),
             nn.Tanh(),
         )
-        # modules = []
-        # # self.decoder_input = nn.Linear(latent_dim, 2048)
-        # # self.decoder_input = nn.Linear(latent_dim, self.hidden_dims[-1] * 4)
-        # self.decoder_input = nn.Linear(
-        #     latent_dim, self.hidden_dims[-1] * self.last_conv_size**2
-        # )
-        # for i in range(len(decoder_hidden_dims) - 1):
-        #     stride = 2
-        #     padding = 1
-        #     if i == len(decoder_hidden_dims) - 2:
-        #         # Adjust the padding for the second last layer
-        #         padding = 3
-        #     modules.append(
-        #         nn.Sequential(
-        #             nn.ConvTranspose2d(
-        #                 decoder_hidden_dims[i],
-        #                 decoder_hidden_dims[i + 1],
-        #                 # kernel_size=4, MNIST
-        #                 kernel_size=3,
-        #                 stride=stride,
-        #                 padding=padding,
-        #                 output_padding=0,
-        #             ),
-        #             nn.BatchNorm2d(decoder_hidden_dims[i + 1]),
-        #             nn.LeakyReLU(),
-        #         )
-        #     )
-        # self.decoder = nn.Sequential(*modules)
-
-        # self.final_layer = nn.Sequential(
-        #     nn.Conv2d(128, out_channels=3, kernel_size=3, padding=1),
-        #     nn.Tanh(),
-        # )
-        # modules = []
-        # hidden_dims.reverse()
-        # for i in range(len(hidden_dims) - 1):
-        #     modules.append(
-        #         nn.Sequential(
-        #             nn.ConvTranspose2d(
-        #                 hidden_dims[i],
-        #                 hidden_dims[i + 1],
-        #                 kernel_size=3,
-        #                 stride=2,
-        #                 padding=1,
-        #                 output_padding=1,
-        #             ),
-        #             nn.BatchNorm2d(hidden_dims[i + 1]),
-        #             nn.LeakyReLU(),
-        #         )
-        #     )
-
-        # self.decoder = nn.Sequential(*modules)
-
-        # self.final_layer = nn.Sequential(
-        #     nn.ConvTranspose2d(
-        #         hidden_dims[-1],
-        #         hidden_dims[-1],
-        #         kernel_size=3,
-        #         stride=2,
-        #         padding=1,
-        #         output_padding=1,
-        #     ),
-        #     nn.BatchNorm2d(hidden_dims[-1]),
-        #     nn.LeakyReLU(),
-        #     nn.Conv2d(hidden_dims[-1], out_channels=1, kernel_size=3, padding=1),
-        #     nn.Tanh(),
-        # )
 
     def encode(self, input: Tensor) -> EncoderOutput:
         """
@@ -188,8 +98,8 @@ class VanillaVAE(L.LightningModule):
         """
         result = self.encoder(input)
         result = torch.flatten(result, start_dim=1)
-        # print(f"encoder output: {result.shape}")
-        # print(f"mu: {self.fc_mu}")
+        print(f"encoder output: {result.shape}")
+        print(f"mu: {self.fc_mu}")
 
         # Split the result into mu and var components
         mu = self.fc_mu(result)
@@ -207,12 +117,12 @@ class VanillaVAE(L.LightningModule):
         result = self.decoder_input(z)
         # result = result.view(-1, 512, 2, 2)
         # result = result.view(-1, 2048, self.last_conv_size, self.last_conv_size)
-        # print(f"decoder input: {result.shape}")
+        print(f"decoder input: {result.shape}")
 
         result = self.decoder(result)
         # print(f"decoder output: {result.shape}")
         # result = self.final_layer(result)
-        # print(f"final output: {result.shape}")
+        print(f"final output: {result.shape}")
         return result
 
     def reparameterize(self, mu: Tensor, logvar: Tensor) -> Tensor:
