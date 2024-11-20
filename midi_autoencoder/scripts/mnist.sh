@@ -9,52 +9,16 @@ PROJECT_DIRN="${PROJECT_NAME//-/_}"
 # Exit the script if any command hits an error
 set -e
 
-# Set up a handler to requeue the job if it hits the time-limit without terminating
-function term_handler()
-{
-    echo "** Job $SLURM_JOB_NAME ($SLURM_JOB_ID) received SIGUSR1 at $(date) **"
-    echo "** Requeuing job $SLURM_JOB_ID so it can run for longer **"
-    scontrol requeue "${SLURM_JOB_ID}"
-}
-# Call this term_hnadler function when the job recieves the SIGUSR1 signal
-trap term_handler SIGUSR1
-
-# sbatch script for Vector
-# Inspired by:
-# https://github.com/VectorInstitute/TechAndEngineering/blob/master/benchmarks/resnet_torch/sample_script/script.sh
-# https://github.com/VectorInstitute/TechAndEngineering/blob/master/checkpoint_examples/PyTorch/launch_job.slrm
-# https://github.com/VectorInstitute/TechAndEngineering/blob/master/checkpoint_examples/PyTorch/run_train.sh
-# https://github.com/PrincetonUniversity/multi_gpu_training/tree/main/02_pytorch_ddp
-# https://pytorch.org/docs/stable/elastic/run.html
-# https://pytorch.org/tutorials/intermediate/ddp_tutorial.html
-# https://unix.stackexchange.com/a/146770/154576
-
 # Store the time at which the script was launched, so we can measure how long has elapsed.
 start_time="$SECONDS"
 
-echo "Job $SLURM_JOB_NAME ($SLURM_JOB_ID) begins on $(hostname), submitted from $SLURM_SUBMIT_HOST ($SLURM_CLUSTER_NAME)"
+# Print disk usage report, to catch errors due to lack of file space.
+echo "------------------------------------"
+echo "df -h:"
+# Print header, then sort the rows alphabetically by mount point
+df -h --output=target,pcent,size,used,avail,source | head -n 1
+df -h --output=target,pcent,size,used,avail,source | tail -n +2 | sort -h
 echo ""
-# Print slurm config report (SLURM environment variables, some of which we use later in the script)
-# By sourcing the script, we execute it as if its code were here in the script
-# N.B. This script only prints things out, it doesn't assign any environment variables.
-echo "Running slurm/utils/report_slurm_config.sh"
-source "slurm/utils/report_slurm_config.sh"
-# Print repo status report (current branch, commit ref, where any uncommitted changes are located)
-# N.B. This script only prints things out, it doesn't assign any environment variables.
-echo "Running slurm/utils/report_repo.sh"
-source "slurm/utils/report_repo.sh"
-echo ""
-if false; then
-    # Print disk usage report, to catch errors due to lack of file space.
-    # This is disabled by default to prevent confusing new users with too
-    # much output.
-    echo "------------------------------------"
-    echo "df -h:"
-    # Print header, then sort the rows alphabetically by mount point
-    df -h --output=target,pcent,size,used,avail,source | head -n 1
-    df -h --output=target,pcent,size,used,avail,source | tail -n +2 | sort -h
-    echo ""
-fi
 echo "-------- Input handling ------------------------------------------------"
 date
 echo ""
@@ -97,8 +61,8 @@ conda activate "$ENVNAME"
 echo ""
 # Print env status (which packages you have installed - useful for diagnostics)
 # N.B. This script only prints things out, it doesn't assign any environment variables.
-echo "Running slurm/utils/report_env_config.sh"
-source "slurm/utils/report_env_config.sh"
+echo "Running $PROJECT_NAME/scripts/report_env_config.sh"
+source "$PROJECT_NAME/scripts/report_env_config.sh"
 
 # Set the JOB_LABEL environment variable
 echo "-------- Setting JOB_LABEL ---------------------------------------------"
@@ -175,7 +139,7 @@ then
     echo "    but there is no checkpoint file at $CKPT_PTH"
     echo "====================================================================="
     exit 1;
-fi;
+fi
 
 echo ""
 echo "------------------------------------"
@@ -213,7 +177,7 @@ echo "WORLD_SIZE = $WORLD_SIZE"
 # NCCL options ----------------------------------------------------------------
 
 # This is needed to print debug info from NCCL, can be removed if all goes well
-# export NCCL_DEBUG=INFO
+export NCCL_DEBUG=INFO
 
 # This is needed to avoid NCCL to use ifiniband, which the cluster does not have
 export NCCL_IB_DISABLE=1
