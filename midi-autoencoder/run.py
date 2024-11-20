@@ -13,7 +13,7 @@ from torchvision.datasets import ImageFolder, MNIST
 import torchvision.transforms as transforms
 from torchvision.utils import make_grid
 
-from models.vanilla_vae import VanillaVAE
+from model import VanillaVAE
 
 IT = 7
 IMG_PATH = f"logs/VanillaVAE/reconstructions/reconstruction_{IT}.pt"
