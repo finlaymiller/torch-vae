@@ -1,107 +1,20 @@
+import copy
 import os
-import torch
-from rich import print
-import torchvision
-from torch.utils.data import random_split, DataLoader
-from torchvision.datasets import ImageFolder, MNIST
-import torchvision.transforms as transforms
+import shutil
+import time
+from contextlib import nullcontext
+from datetime import datetime
 
-from model import VanillaVAE
+import data_transformations
+import datasets
+import torch
+import utils
+from evaluation import evaluate
+from models import VanillaVAE
+from rich import print
+from torch import nn
 
 BASE_BATCH_SIZE = 128
-
-
-def main(config):
-    # system setup
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    torch.autograd.set_detect_anomaly(mode=True)  # type: ignore
-    device = torch.device(config["trainer_params"]["device"]) if torch.cuda.is_available() else torch.device("cpu")
-    print(f"Device: '{device}'")
-
-    # model setup
-    model = VanillaVAE(
-        config["model_params"]["in_channels"],
-        config["model_params"]["latent_dim"],
-        config["exp_params"],
-        hidden_dims=config["model_params"]["hidden_dims"],
-    )
-    model.to(device)
-    # TODO: summarize model here
-    # dataset setup
-    img_transforms = transforms.Compose(
-        [
-            transforms.Grayscale(),
-            transforms.ToTensor(),
-            # transforms.Normalize(mean=[0], std=[1]), # TODO: properly standardize (mean=0.5)
-        ]
-    )
-    full_dataset = torchvision.datasets.MNIST(
-        root="/media/nova/Datasets/mnist",
-        train=True,
-        download=False,
-        transform=img_transforms,
-    )
-    # full_dataset = ImageFolder(
-    #     config["data_params"]["data_path"], transform=img_transforms
-    # )
-    print(f"loaded {len(full_dataset)} images")
-    train_size = int(0.8 * len(full_dataset))
-    val_size = len(full_dataset) - train_size
-    train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=config["data_params"]["train_batch_size"],
-        shuffle=True,
-        num_workers=config["data_params"]["num_workers"],
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=config["data_params"]["val_batch_size"],
-        shuffle=False,
-        num_workers=config["data_params"]["num_workers"],
-    )
-
-    # lightning setup
-    logger = TensorBoardLogger(
-        save_dir=config["logging_params"]["save_dir"],
-        name=config["logging_params"]["name"],
-    )
-    checkpoint_callback = ModelCheckpoint(
-        monitor="val_loss",
-        filename="best_model",
-        save_top_k=1,
-        mode="min",
-    )
-    early_stopping_callback = EarlyStopping(
-        monitor="val_loss",
-        patience=5,
-        mode="min",
-    )
-    reconstruction_callback = ReconstructionLogger()
-    trainer = L.Trainer(
-        logger=logger,
-        # overfit_batches=1,
-        # limit_train_batches=100,
-        log_every_n_steps=config["logging_params"]["log_interval"],
-        accelerator="gpu",
-        devices=config["trainer_params"]["devices"],
-        max_epochs=config["trainer_params"]["max_epochs"],
-        default_root_dir=config["logging_params"]["save_dir"],
-        enable_checkpointing=True,
-        # val_check_interval=0.1,
-        check_val_every_n_epoch=config["trainer_params"]["check_val_interval"],
-        callbacks=[
-            checkpoint_callback,
-            early_stopping_callback,
-            reconstruction_callback,
-        ],
-    )
-    trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=val_loader)
-
-    print("training complete, saving video")
-    frames = torch.load(IMG_PATH)
-    torchvision.io.write_video(f"logs/VanillaVAE/videos/reconstruction_{IT}.mp4", frames.cpu(), fps=25)
 
 
 def run(config):
@@ -125,41 +38,6 @@ def run(config):
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
-    # DISTRIBUTION ============================================================
-    # Setup for distributed training
-    setup_slurm_distributed()
-    config.world_size = int(os.environ.get("WORLD_SIZE", 1))
-    config.distributed = check_is_distributed()
-    if config.world_size > 1 and not config.distributed:
-        raise EnvironmentError(
-            f"WORLD_SIZE is {config.world_size}, but not all other required"
-            " environment variables for distributed training are set."
-        )
-    # Work out the total batch size depending on the number of GPUs we are using
-    config.batch_size = config.batch_size_per_gpu * config.world_size
-
-    if config.distributed:
-        # For multiprocessing distributed training, gpu rank needs to be
-        # set to the global rank among all the processes.
-        config.global_rank = int(os.environ["RANK"])
-        config.local_rank = int(os.environ["LOCAL_RANK"])
-        print(
-            f"Rank {config.global_rank} of {config.world_size} on {gethostname()}"
-            f" (local GPU {config.local_rank} of {torch.cuda.device_count()})."
-            f" Communicating with master at {os.environ['MASTER_ADDR']}:{os.environ['MASTER_PORT']}"
-        )
-        torch.distributed.init_process_group(backend="nccl")
-    else:
-        config.global_rank = 0
-
-    # Suppress printing if this is not the master process for the node
-    if config.distributed and config.global_rank != 0:
-
-        def print_pass(*args, **kwargs):
-            pass
-
-        builtins.print = print_pass
-
     print()
     print("Configuration:")
     print()
@@ -170,8 +48,6 @@ def run(config):
     # Check which device to use
     use_cuda = not config.no_cuda and torch.cuda.is_available()
 
-    if config.distributed and not use_cuda:
-        raise EnvironmentError("Distributed training with NCCL requires CUDA.")
     if not use_cuda:
         device = torch.device("cpu")
     elif config.local_rank is not None:
@@ -179,7 +55,7 @@ def run(config):
     else:
         device = "cuda"
 
-    print(f"Using device {device}")
+    print(f"Using device '{device}'")
 
     # RESTORE OMITTED CONFIG FROM RESUMPTION CHECKPOINT =======================
     checkpoint = None
@@ -224,106 +100,40 @@ def run(config):
             utils.set_rng_seeds_fixed(config.seed + start_epoch, all_gpu=False)
 
     # MODEL ===================================================================
-
-    # Encoder -----------------------------------------------------------------
-    # Build our Encoder.
-    # We have to build the encoder before we load the dataset because it will
+    # We have to build the model before we load the dataset because it will
     # inform us about what size images we should produce in the preprocessing pipeline.
     n_class, raw_img_size, img_channels = datasets.image_dataset_sizes(config.dataset_name)
-    if img_channels > 3 and config.freeze_encoder:
-        raise ValueError(
-            "Using a dataset with more than 3 image channels will require retraining the encoder"
-            ", but a frozen encoder was requested."
-        )
-    if config.arch_framework == "timm":
-        encoder, encoder_config = encoders.get_timm_encoder(config.arch, config.pretrained, in_chans=img_channels)
-    elif config.arch_framework == "torchvision":
-        # It's trickier to implement this for torchvision models, because they
-        # don't have the same naming conventions for model names as in timm;
-        # need us to specify the name of the weights when loading a pretrained
-        # model; and don't support changing the number of input channels.
-        raise NotImplementedError(f"Unsupported architecture framework: {config.arch_framework}")
-    else:
-        raise ValueError(f"Unknown architecture framework: {config.arch_framework}")
-
-    if config.freeze_encoder and not config.pretrained:
-        warnings.warn(
-            "A frozen encoder was requested, but the encoder is not pretrained.",
-            UserWarning,
-            stacklevel=2,
-        )
-
-    if config.image_size is None:
-        if "input_size" in encoder_config:
-            config.image_size = encoder_config["input_size"][-1]
-            print(f"Setting model input image size to encoder's expected input size: {config.image_size}")
-        else:
-            config.image_size = 224
-            print(f"Setting model input image size to default: {config.image_size}")
-            if raw_img_size:
-                warnings.warn(
-                    "Be aware that we are using a different input image size"
-                    f" ({config.image_size}px) to the raw image size in the"
-                    f" dataset ({raw_img_size}px).",
-                    UserWarning,
-                    stacklevel=2,
-                )
-    elif "input_size" in encoder_config and config.pretrained and encoder_config["input_size"][-1] != config.image_size:
-        warnings.warn(
-            f"A different image size {config.image_size} than what the model was"
-            f" pretrained with {encoder_config['input_size'][-1]} was suplied",
-            UserWarning,
-            stacklevel=2,
-        )
-
-    # Classifier -------------------------------------------------------------
-    # Build our classifier head
-    classifier = nn.Linear(encoder_config["n_feature"], n_class)
+    if not hasattr(config, "image_size") or config.image_size is None:
+        print(f"Setting model input image size to dataset's image size: {raw_img_size}")
+        config.image_size = raw_img_size
+    print(f"loading model for '{config.dataset_name}' dataset")
+    model = VanillaVAE(img_channels, config.n_features)  # TODO: make this programmatic, handle lr
+    # holdover from original script, for compatibility
+    encoder_config = {
+        "input_size": raw_img_size,
+        "n_feature": config.n_features,
+    }
 
     # Configure model for distributed training --------------------------------
-    print("\nEncoder architecture:")
-    print(encoder)
-    print("\nClassifier architecture:")
-    print(classifier)
-    print()
+    print("\nModel architecture:")
+    print(model)
 
     if config.cpu_workers is None:
         config.cpu_workers = utils.get_num_cpu_available()
 
     if not use_cuda:
         print("Using CPU (this will be slow)")
-    elif config.distributed:
-        # Convert batchnorm into SyncBN, using stats computed from all GPUs
-        encoder = nn.SyncBatchNorm.convert_sync_batchnorm(encoder)
-        classifier = nn.SyncBatchNorm.convert_sync_batchnorm(classifier)
-        # For multiprocessing distributed, the DistributedDataParallel
-        # constructor should always set a single device scope, otherwise
-        # DistributedDataParallel will use all available devices.
-        encoder.to(device)
-        classifier.to(device)
-        torch.cuda.set_device(device)
-        encoder = nn.parallel.DistributedDataParallel(
-            encoder, device_ids=[config.local_rank], output_device=config.local_rank
-        )
-        classifier = nn.parallel.DistributedDataParallel(
-            classifier, device_ids=[config.local_rank], output_device=config.local_rank
-        )
     else:
         if config.local_rank is not None:
             torch.cuda.set_device(config.local_rank)
-        encoder = encoder.to(device)
-        classifier = classifier.to(device)
+        model = model.to(device)
 
     # DATASET =================================================================
+    print(f"Loading '{config.dataset_name}' dataset")
     # Transforms --------------------------------------------------------------
     transform_args = {}
     if config.dataset_name in data_transformations.VALID_TRANSFORMS:
         transform_args["normalization"] = config.dataset_name
-
-    if "mean" in encoder_config:
-        transform_args["mean"] = encoder_config["mean"]
-    if "std" in encoder_config:
-        transform_args["std"] = encoder_config["std"]
 
     transform_train, transform_eval = data_transformations.get_transform(
         config.transform_type, config.image_size, transform_args
@@ -351,6 +161,9 @@ def run(config):
     eval_set = "Val" if distinct_val_test else "Test"
 
     # Dataloader --------------------------------------------------------------
+    config.world_size = int(os.environ.get("WORLD_SIZE", 1))
+    config.batch_size = config.batch_size_per_gpu * config.world_size
+
     dl_train_kwargs = {
         "batch_size": config.batch_size_per_gpu,
         "drop_last": True,
@@ -372,33 +185,12 @@ def run(config):
 
     dl_val_kwargs = copy.deepcopy(dl_test_kwargs)
 
-    if config.distributed:
-        # The DistributedSampler breaks up the dataset across the GPUs
-        dl_train_kwargs["sampler"] = DistributedSampler(
-            dataset_train,
-            shuffle=True,
-            seed=config.seed if config.seed is not None else 0,
-            drop_last=False,
-        )
-        dl_train_kwargs["shuffle"] = None
-        dl_val_kwargs["sampler"] = DistributedSampler(
-            dataset_val,
-            shuffle=False,
-            drop_last=False,
-        )
-        dl_val_kwargs["shuffle"] = None
-        dl_test_kwargs["sampler"] = DistributedSampler(
-            dataset_test,
-            shuffle=False,
-            drop_last=False,
-        )
-        dl_test_kwargs["shuffle"] = None
-
     dataloader_train = torch.utils.data.DataLoader(dataset_train, **dl_train_kwargs)
     dataloader_val = torch.utils.data.DataLoader(dataset_val, **dl_val_kwargs)
     dataloader_test = torch.utils.data.DataLoader(dataset_test, **dl_test_kwargs)
 
     # OPTIMIZATION ============================================================
+    print(f"Loading optimizer '{config.optimizer}'")
     # Optimizer ---------------------------------------------------------------
     # Set up the optimizer
 
@@ -409,7 +201,7 @@ def run(config):
 
     # Freeze the encoder, if requested
     if config.freeze_encoder:
-        for m in encoder.parameters():
+        for m in model.encoder.parameters():
             m.requires_grad = False
 
     # Set up a parameter group for each component of the model, allowing
@@ -418,16 +210,16 @@ def run(config):
     if not config.freeze_encoder:
         params.append(
             {
-                "params": encoder.parameters(),
+                "params": model.encoder.parameters(),
                 "lr": config.lr * config.lr_encoder_mult,
                 "name": "encoder",
             }
         )
     params.append(
         {
-            "params": classifier.parameters(),
-            "lr": config.lr * config.lr_classifier_mult,
-            "name": "classifier",
+            "params": model.decoder.parameters(),
+            "lr": config.lr * config.lr_decoder_mult,
+            "name": "decoder",
         }
     )
 
@@ -448,7 +240,7 @@ def run(config):
 
     # Loss function -----------------------------------------------------------
     # Set up loss function
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.MSELoss()
 
     # LOGGING =================================================================
     # Setup logging and saving
@@ -482,14 +274,18 @@ def run(config):
         # generate a name. Let's use that as the run_name.
         if config.run_name is None:
             config.run_name = wandb.run.name
+            print(f"Copied run name '{config.run_name}' from wandb")
         if config.run_id is None:
             config.run_id = wandb.run.id
+            print(f"Copied run id '{config.run_id}' from wandb")
 
     # If we still don't have a run name, generate one from the current time.
     if config.run_name is None:
         config.run_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        print(f"Generated run name '{config.run_name}'")
     if config.run_id is None:
         config.run_id = utils.generate_id()
+        print(f"Generated run id '{config.run_id}'")
 
     # If no checkpoint path was supplied, but models_dir was, we will automatically
     # determine the path to which we will save the model checkpoint.
@@ -518,18 +314,17 @@ def run(config):
     total_step = 0
     n_samples_seen = 0
 
-    best_stats = {"max_accuracy": 0, "best_epoch": 0}
+    best_stats = {"best_epoch": 0}
 
     if checkpoint is not None:
         print(f"Loading state from checkpoint (epoch {checkpoint['epoch']})")
         # Map model to be loaded to specified single gpu.
         total_step = checkpoint["total_step"]
         n_samples_seen = checkpoint["n_samples_seen"]
-        encoder.load_state_dict(checkpoint["encoder"])
-        classifier.load_state_dict(checkpoint["classifier"])
+        model.encoder.load_state_dict(checkpoint["encoder"])
+        model.decoder.load_state_dict(checkpoint["decoder"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         scheduler.load_state_dict(checkpoint["scheduler"])
-        best_stats["max_accuracy"] = checkpoint.get("max_accuracy", 0)
         best_stats["best_epoch"] = checkpoint.get("best_epoch", 0)
 
     # TRAIN ===================================================================
@@ -539,14 +334,8 @@ def run(config):
     print(config)
     print()
 
-    # Ensure modules are on the correct device
-    encoder = encoder.to(device)
-    classifier = classifier.to(device)
-
-    # Stack the encoder and classifier together to create an overall model.
-    # At inference time, we don't need to make a distinction between modules
-    # within this stack.
-    model = nn.Sequential(encoder, classifier)
+    # Ensure model is on the correct device
+    model = model.to(device)
 
     timing_stats = {}
     t_end_epoch = time.time()
@@ -591,8 +380,7 @@ def run(config):
         # Run one epoch of training
         train_stats, total_step, n_samples_seen = train_one_epoch(
             config=config,
-            encoder=encoder,
-            classifier=classifier,
+            model=model,
             optimizer=optimizer,
             scheduler=scheduler,
             criterion=criterion,
@@ -622,7 +410,6 @@ def run(config):
             print(f"  Duration ...........{timing_stats['train']:11.2f} seconds")
         print(f"  Throughput .........{train_stats['throughput']:11.2f} samples/sec")
         print(f"  Loss ...............{train_stats['loss']:14.5f}")
-        print(f"  Accuracy ...........{train_stats['accuracy']:11.2f} %")
 
         # Validate ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # Evaluate on validation set
@@ -633,16 +420,11 @@ def run(config):
             model=model,
             device=device,
             partition_name=eval_set,
-            is_distributed=config.distributed,
+            is_distributed=False,
         )
         t_end_val = time.time()
         timing_stats["val"] = t_end_val - t_start_val
         eval_stats["throughput"] = len(dataloader_val.dataset) / timing_stats["val"]
-
-        # Check if this is the new best model
-        if eval_stats["accuracy"] >= best_stats["max_accuracy"]:
-            best_stats["max_accuracy"] = eval_stats["accuracy"]
-            best_stats["best_epoch"] = epoch
 
         print(f"Evaluating epoch {epoch}/{config.epochs} summary:")
         if timing_stats["val"] > 172800:
@@ -655,15 +437,14 @@ def run(config):
             print(f"  Duration ...........{timing_stats['val']:11.2f} seconds")
         print(f"  Throughput .........{eval_stats['throughput']:11.2f} samples/sec")
         print(f"  Cross-entropy ......{eval_stats['cross-entropy']:14.5f}")
-        print(f"  Accuracy ...........{eval_stats['accuracy']:11.2f} %")
 
         # Save model ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         t_start_save = time.time()
-        if config.model_output_dir and (not config.distributed or config.global_rank == 0):
-            safe_save_model(
+        if config.model_output_dir and (not config.global_rank == 0):
+            utils.safe_save_model(
                 {
-                    "encoder": encoder,
-                    "classifier": classifier,
+                    "encoder": model.encoder,
+                    "decoder": model.decoder,
                     "optimizer": optimizer,
                     "scheduler": scheduler,
                 },
@@ -717,10 +498,6 @@ def run(config):
         print("Training already completed!")
     else:
         print(f"Training complete! (Trained epochs {start_epoch} to {config.epochs})")
-    print(
-        f"Best {eval_set} accuracy was {best_stats['max_accuracy']:.2f}%,"
-        f" seen at the end of epoch {best_stats['best_epoch']}"
-    )
 
     # TEST ====================================================================
     print(f"\nEvaluating final model (epoch {config.epochs}) performance")
@@ -731,7 +508,7 @@ def run(config):
         model=model,
         device=device,
         partition_name="Test",
-        is_distributed=config.distributed,
+        is_distributed=False,
     )
     # Send stats to wandb
     if config.log_wandb and config.global_rank == 0:
@@ -745,7 +522,7 @@ def run(config):
             model=model,
             device=device,
             partition_name=eval_set,
-            is_distributed=config.distributed,
+            is_distributed=False,
         )
         # Send stats to wandb
         if config.log_wandb and config.global_rank == 0:
@@ -763,25 +540,218 @@ def run(config):
         transform_eval=transform_eval,
     )[0]
     dl_train_eval_kwargs = copy.deepcopy(dl_test_kwargs)
-    if config.distributed:
-        # The DistributedSampler breaks up the dataset across the GPUs
-        dl_train_eval_kwargs["sampler"] = DistributedSampler(
-            dataset_train_eval,
-            shuffle=False,
-            drop_last=False,
-        )
-        dl_train_eval_kwargs["shuffle"] = None
     dataloader_train_eval = torch.utils.data.DataLoader(dataset_train_eval, **dl_train_eval_kwargs)
     eval_stats = evaluate(
         dataloader=dataloader_train_eval,
         model=model,
         device=device,
         partition_name="Train",
-        is_distributed=config.distributed,
+        is_distributed=False,
     )
     # Send stats to wandb
     if config.log_wandb and config.global_rank == 0:
-        wandb.log({**{f"Eval/Train/{k}": v for k, v in eval_stats.items()}}, step=total_step)
+        wandb.log({**{f"eval/train/{k}": v for k, v in eval_stats.items()}}, step=total_step)
+
+
+def train_one_epoch(
+    config,
+    model,
+    optimizer,
+    scheduler,
+    criterion,
+    dataloader,
+    device="cuda",
+    epoch=1,
+    n_epoch=None,
+    total_step=0,
+    n_samples_seen=0,
+):
+    r"""
+    Train the model for one epoch.
+
+    Parameters
+    ----------
+    config : argparse.Namespace or OmegaConf
+        The global config object.
+    model : torch.nn.Module
+        The model network.
+    optimizer : torch.optim.Optimizer
+        The optimizer.
+    scheduler : torch.optim.lr_scheduler._LRScheduler
+        The learning rate scheduler.
+    criterion : torch.nn.Module
+        The loss function.
+    dataloader : torch.utils.data.DataLoader
+        A dataloader for the training set.
+    device : str or torch.device, default="cuda"
+        The device to use.
+    epoch : int, default=1
+        The current epoch number (indexed from 1).
+    n_epoch : int, optional
+        The total number of epochs scheduled to train for.
+    total_step : int, default=0
+        The total number of steps taken so far.
+    n_samples_seen : int, default=0
+        The total number of samples seen so far.
+
+    Returns
+    -------
+    results: dict
+        A dictionary containing the training performance for this epoch.
+    total_step : int
+        The total number of steps taken after this epoch.
+    n_samples_seen : int
+        The total number of samples seen after this epoch.
+    """
+    # Put the model in train mode
+    model.train()
+
+    if config.log_wandb:
+        # Lazy import of wandb, since logging to wandb is optional
+        import wandb
+
+    loss_epoch = 0
+
+    if config.print_interval is None:
+        # Default to printing to console every time we log to wandb
+        config.print_interval = config.log_interval
+
+    t_end_batch = time.time()
+    t_start_wandb = t_end_wandb = None
+    for batch_idx, (stimuli, y_true) in enumerate(dataloader):
+        t_start_batch = time.time()
+        batch_size_this_gpu = stimuli.shape[0]
+
+        # Move training inputs and targets to the GPU
+        stimuli = stimuli.to(device)
+        y_true = y_true.to(device)
+
+        # Forward pass --------------------------------------------------------
+        # Perform the forward pass through the model
+        t_start_model = time.time()
+        # N.B. To accurately time steps on GPU we need to use torch.cuda.Event
+        ct_forward = torch.cuda.Event(enable_timing=True)
+        ct_forward.record()
+        with torch.no_grad() if config.freeze_encoder else nullcontext():
+            output = model.forward(stimuli)
+        logits = output["output"]
+        # Reset gradients
+        optimizer.zero_grad()
+        # Measure loss
+        loss = criterion(logits, stimuli)
+
+        # Backward pass -------------------------------------------------------
+        # Now the backward pass
+        ct_backward = torch.cuda.Event(enable_timing=True)
+        ct_backward.record()
+        loss.backward()
+
+        # Update --------------------------------------------------------------
+        # Use our optimizer to update the model parameters
+        ct_optimizer = torch.cuda.Event(enable_timing=True)
+        ct_optimizer.record()
+        optimizer.step()
+
+        # Step the scheduler each batch
+        scheduler.step()
+
+        # Increment training progress counters
+        total_step += 1
+        batch_size_all = batch_size_this_gpu * config.world_size
+        n_samples_seen += batch_size_all
+
+        # Logging -------------------------------------------------------------
+        # Log details about training progress
+        t_start_logging = time.time()
+        ct_logging = torch.cuda.Event(enable_timing=True)
+        ct_logging.record()
+
+        loss_batch = loss.item()
+        loss_epoch += loss_batch
+
+        if epoch <= 1 and batch_idx == 0:
+            # Debugging
+            print("stimuli.shape =", stimuli.shape)
+            print("logits.shape  =", logits.shape)
+            print("loss.shape    =", loss.shape)
+            # Debugging intensifies
+            print("y_true =", y_true)
+            print("logits[0] =", logits[0])
+            print("loss =", loss.detach().item())
+
+        # Log sample training images to show on wandb
+        if config.log_wandb and batch_idx <= 1:
+            # Log 8 example training images from each GPU
+            img_indices = [offset + relative for offset in [0, batch_size_this_gpu // 2] for relative in [0, 1, 2, 3]]
+            img_indices = sorted(set(img_indices))
+            log_images = stimuli[img_indices]
+            if config.global_rank == 0:
+                wandb.log(
+                    {"Training/stepwise/Train/stimuli": wandb.Image(log_images)},
+                    step=total_step,
+                )
+
+        # Log to console
+        if batch_idx <= 2 or batch_idx % config.print_interval == 0 or batch_idx >= len(dataloader) - 1:
+            print(
+                f"Train Epoch:{epoch:4d}" + (f"/{n_epoch}" if n_epoch is not None else ""),
+                " Step:{:4d}/{}".format(batch_idx + 1, len(dataloader)),
+                " Loss:{:8.5f}".format(loss_batch),
+                " LR: {}".format(scheduler.get_last_lr()),
+            )
+
+        # Log to wandb
+        if config.log_wandb and config.global_rank == 0 and batch_idx % config.log_interval == 0:
+            # Create a log dictionary to send to wandb
+            # Epoch progress interpolates smoothly between epochs
+            epoch_progress = epoch - 1 + (batch_idx + 1) / len(dataloader)
+            # Throughput is the number of samples processed per second
+            throughput = batch_size_all / (t_start_logging - t_end_batch)
+            log_dict = {
+                "Training/stepwise/epoch": epoch,
+                "Training/stepwise/epoch_progress": epoch_progress,
+                "Training/stepwise/n_samples_seen": n_samples_seen,
+                "Training/stepwise/Train/throughput": throughput,
+                "Training/stepwise/Train/loss": loss_batch,
+            }
+            # Track the learning rate of each parameter group
+            for lr_idx in range(len(optimizer.param_groups)):
+                if "name" in optimizer.param_groups[lr_idx]:
+                    grp_name = optimizer.param_groups[lr_idx]["name"]
+                elif len(optimizer.param_groups) == 1:
+                    grp_name = ""
+                else:
+                    grp_name = f"grp{lr_idx}"
+                if grp_name != "":
+                    grp_name = f"-{grp_name}"
+                grp_lr = optimizer.param_groups[lr_idx]["lr"]
+                log_dict[f"Training/stepwise/lr{grp_name}"] = grp_lr
+            # Synchronize ensures everything has finished running on each GPU
+            torch.cuda.synchronize()
+            # Record how long it took to do each step in the pipeline
+            pre = "Training/stepwise/duration"
+            if t_start_wandb is not None:
+                # Record how long it took to send to wandb last time
+                log_dict[f"{pre}/wandb"] = t_end_wandb - t_start_wandb
+            log_dict[f"{pre}/dataloader"] = t_start_batch - t_end_batch
+            log_dict[f"{pre}/preamble"] = t_start_model - t_start_batch
+            log_dict[f"{pre}/forward"] = ct_forward.elapsed_time(ct_backward) / 1000
+            log_dict[f"{pre}/backward"] = ct_backward.elapsed_time(ct_optimizer) / 1000
+            log_dict[f"{pre}/optimizer"] = ct_optimizer.elapsed_time(ct_logging) / 1000
+            log_dict[f"{pre}/overall"] = time.time() - t_end_batch
+            t_start_wandb = time.time()
+            log_dict[f"{pre}/logging"] = t_start_wandb - t_start_logging
+            # Send to wandb
+            wandb.log(log_dict, step=total_step)
+            t_end_wandb = time.time()
+
+        # Record the time when we finished this batch
+        t_end_batch = time.time()
+
+    results = {
+        "loss": loss_epoch / len(dataloader),
+    }
+    return results, total_step, n_samples_seen
 
 
 def get_parser():
@@ -820,7 +790,7 @@ def get_parser():
         "--dataset",
         dest="dataset_name",
         type=str,
-        default="20240621",
+        default="mnist",
         help="Name of the dataset to learn. Default: %(default)s",
     )
     group.add_argument(
@@ -859,7 +829,7 @@ def get_parser():
     group.add_argument(
         "--transform-type",
         type=str,
-        default="cifar",
+        default="digits",
         help="Name of augmentation stack to apply to training data. Default: %(default)s",
     )
     group.add_argument(
@@ -876,7 +846,7 @@ def get_parser():
         "--architecture",
         dest="arch",
         type=str,
-        default="resnet18",
+        default="VanillaVAE",
         help="Name of model architecture. Default: %(default)s",
     )
     group.add_argument(
@@ -884,26 +854,15 @@ def get_parser():
         action="store_true",
         help="Use default pretrained model weights, taken from hugging-face hub.",
     )
-    mx_group = group.add_mutually_exclusive_group()
-    mx_group.add_argument(
-        "--torchvision",
-        dest="arch_framework",
-        action="store_const",
-        const="torchvision",
-        default="timm",
-        help="Use model architecture from torchvision (default is timm).",
-    )
-    mx_group.add_argument(
-        "--timm",
-        dest="arch_framework",
-        action="store_const",
-        const="timm",
-        default="timm",
-        help="Use model architecture from timm (default).",
-    )
     group.add_argument(
         "--freeze-encoder",
         action="store_true",
+    )
+    group.add_argument(
+        "--n_features",
+        type=int,
+        default=100,
+        help="Number of hidden features. Default: %(default)s",
     )
     # Optimization args -------------------------------------------------------
     group = parser.add_argument_group("Optimization routine")
@@ -926,15 +885,17 @@ def get_parser():
     )
     group.add_argument(
         "--lr-encoder-mult",
+        dest="lr_encoder_mult",
         type=float,
         default=1.0,
         help="Multiplier for encoder learning rate, relative to overall LR.",
     )
     group.add_argument(
-        "--lr-classifier-mult",
+        "--lr-decoder-mult",
+        dest="lr_decoder_mult",
         type=float,
         default=1.0,
-        help="Multiplier for classifier head's learning rate, relative to overall LR.",
+        help="Multiplier for decoder learning rate, relative to overall LR.",
     )
     group.add_argument(
         "--weight-decay",
@@ -1006,6 +967,13 @@ def get_parser():
         ),
     )
     group.add_argument(
+        "--global-rank",
+        dest="global_rank",
+        type=int,
+        default=0,
+        help="Global rank for distributed computing. Default: %(default)s",
+    )
+    group.add_argument(
         "--cpu-workers",
         "--workers",
         dest="cpu_workers",
@@ -1019,7 +987,6 @@ def get_parser():
     )
     group.add_argument(
         "--gpu",
-        "--local-rank",
         dest="local_rank",
         default=None,
         type=int,
@@ -1030,7 +997,7 @@ def get_parser():
     group.add_argument(
         "--log-interval",
         type=int,
-        default=20,
+        default=10,
         help="Number of batches between each log to wandb (if enabled). Default: %(default)s",
     )
     group.add_argument(
@@ -1063,17 +1030,20 @@ def get_parser():
     group.add_argument(
         "--wandb-project",
         type=str,
-        default="template-experiment",
+        default="midi_autoencoder",
         help="Name of project on wandb, where these runs will be saved. Default: %(default)s",
     )
     group.add_argument(
         "--run-name",
+        dest="run_name",
         type=str,
-        help="Human-readable identifier for the model run or job. Used to name the run on wandb.",
+        default=None,
+        help="Human-readable identifier for the model run or job. Used to name the run on wandb. Default: %(default)s",
     )
     group.add_argument(
         "--run-id",
         type=str,
+        default=None,
         help="Unique identifier for the model run or job. Used as the run ID on wandb.",
     )
 
@@ -1090,7 +1060,6 @@ def cli():
     del config.disable_wandb
     # Set protoval_split_id from prototyping, and turn prototyping into a bool
     config.prototyping = config.protoval_split_id is not None
-    print(f"loaded with arguments:\n{config}")
     return run(config)
 
 

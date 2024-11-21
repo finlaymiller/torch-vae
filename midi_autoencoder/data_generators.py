@@ -1,4 +1,5 @@
 import os
+
 import numpy as np
 from PIL import Image
 from rich.progress import track
@@ -52,7 +53,7 @@ def generate_line_images(
                     end_y = np.random.randint(start_y, height)
                 img[
                     start_y:end_y,
-                    max(0, x - line_width // 2): min(width, x + line_width // 2 + 1),
+                    max(0, x - line_width // 2) : min(width, x + line_width // 2 + 1),
                 ] = 255
             else:
                 y = np.random.randint(0, height)
@@ -63,7 +64,7 @@ def generate_line_images(
                     start_x = np.random.randint(0, width)
                     end_x = np.random.randint(start_x, width)
                 img[
-                    max(0, y - line_width // 2): min(height, y + line_width // 2 + 1),
+                    max(0, y - line_width // 2) : min(height, y + line_width // 2 + 1),
                     start_x:end_x,
                 ] = 255
 

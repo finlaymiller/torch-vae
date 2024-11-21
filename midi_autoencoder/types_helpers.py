@@ -7,8 +7,9 @@ Contains few TypedDict classes:
 
 """
 
-from torch import Tensor
 from typing import TypedDict
+
+from torch import Tensor
 
 
 class EncoderOutput(TypedDict):

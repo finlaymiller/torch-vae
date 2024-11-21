@@ -1,9 +1,8 @@
 import torch
-from torch import nn, Tensor, optim
-from torch.nn import functional as F
 import torch.nn.init as init
-
-from types_helpers import EncoderOutput, ModelOutput, LossOutput
+from torch import Tensor, nn
+from torch.nn import functional as F
+from types_helpers import EncoderOutput, LossOutput, ModelOutput
 
 
 class VanillaVAE(nn.Module):
@@ -22,69 +21,76 @@ class VanillaVAE(nn.Module):
         linear Module which "learns" the log-var vector of the latents distribution
     """
 
-    def __init__(self, in_channels, latent_dim, exp_params, hidden_dims=None, **kwargs):
+    def __init__(
+        self,
+        in_channels,
+        latent_dim,
+        learning_rate: float = 0.001,
+        weight_decay: float = 0.00001,
+        kld_weight: float = 0.00025,
+        scheduler_gamma: float = 0.1,
+        hidden_dims=None,
+        **kwargs,
+    ):
         super(VanillaVAE, self).__init__()
 
-        self.save_hyperparameters()
-
         self.latent_dim = latent_dim
-        self.exp_params = exp_params
+        self.kld_weight = kld_weight
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
+        self.scheduler_gamma = scheduler_gamma
         self.last_conv_size = 4
 
         if hidden_dims is None:
             hidden_dims = [32, 64, 128, 256]
         self.hidden_dims = hidden_dims
-        decoder_hidden_dims = self.hidden_dims[::-1]
 
-        # Encoder
-        self.encoder = nn.Sequential(
-            nn.Conv2d(
-                in_channels=in_channels,
-                out_channels=32,
-                kernel_size=4,
-                stride=2,
-                padding=1,
-            ),  # CWH = [32, 64, 64]
+        modules = []
+        for h_dim in hidden_dims:
+            modules.append(
+                nn.Sequential(
+                    nn.Conv2d(in_channels, out_channels=h_dim, kernel_size=3, stride=2, padding=1),
+                    nn.BatchNorm2d(h_dim),
+                    nn.LeakyReLU(),
+                )
+            )
+            in_channels = h_dim
+
+        self.encoder = nn.Sequential(*modules)
+        self.fc_mu = nn.Linear(hidden_dims[-1] * 4, latent_dim)
+        self.fc_var = nn.Linear(hidden_dims[-1] * 4, latent_dim)
+
+        self.decoder_input = nn.Linear(latent_dim, hidden_dims[-1] * 4)
+        hidden_dims.reverse()
+
+        modules = []
+        for i in range(len(hidden_dims) - 1):
+            modules.append(
+                nn.Sequential(
+                    nn.ConvTranspose2d(
+                        hidden_dims[i], hidden_dims[i + 1], kernel_size=3, stride=2, padding=1, output_padding=1
+                    ),
+                    nn.BatchNorm2d(hidden_dims[i + 1]),
+                    nn.LeakyReLU(),
+                )
+            )
+
+        self.decoder = nn.Sequential(*modules)
+
+        # self.final_layer = nn.Sequential(
+        # nn.ConvTranspose2d(hidden_dims[-1], hidden_dims[-1], kernel_size=3, stride=2, padding=1, output_padding=1),
+        #     nn.BatchNorm2d(hidden_dims[-1]),
+        #     nn.LeakyReLU(),
+        #     nn.Conv2d(hidden_dims[-1], out_channels=1, kernel_size=3, padding=1),
+        #     nn.Tanh(),
+        # )
+
+        self.final_layer = nn.Sequential(
+            nn.ConvTranspose2d(32, 32, kernel_size=3, stride=2, padding=1, output_padding=0),
             nn.BatchNorm2d(32),
-            nn.LeakyReLU(True),
-            nn.Conv2d(32, 64, 4, 2, 1),  # CWH = [64, 32, 32]
-            nn.BatchNorm2d(64),
-            nn.LeakyReLU(True),
-            nn.Conv2d(64, 128, 4, 2, 1),  # CWH = [128, 16, 16]
-            nn.BatchNorm2d(128),
-            nn.LeakyReLU(True),
-            nn.Conv2d(128, 256, 4, 2, 1),  # CWH = [256, 8, 8]
-            nn.BatchNorm2d(256),
-            nn.LeakyReLU(True),
-            nn.Flatten(),  # 16384
-        )
-
-        self.fc_mu = nn.Linear(256 * 8 * 8, latent_dim)
-        self.fc_var = nn.Linear(256 * 8 * 8, latent_dim)
-
-        # Decoder
-        self.decoder_input = nn.Linear(latent_dim, 256 * 8 * 8)
-        self.decoder = nn.Sequential(
-            nn.Unflatten(1, (256, 8, 8)),
-            nn.ConvTranspose2d(
-                in_channels=256,
-                out_channels=128,
-                kernel_size=4,
-                stride=2,
-                padding=1,
-            ),  # CWH = [128, 16, 16]
-            nn.BatchNorm2d(128),
-            nn.LeakyReLU(True),
-            nn.ConvTranspose2d(128, 64, 4, 2, 1),  # CWH = [64, 32, 32]
-            nn.BatchNorm2d(64),
-            nn.LeakyReLU(True),
-            nn.ConvTranspose2d(64, 32, 4, 2, 1),  # CWH = [32, 64, 64]
-            nn.BatchNorm2d(32),
-            nn.LeakyReLU(True),
-            nn.ConvTranspose2d(32, 3, 4, 2, 1),  # CWH = [3, 128, 128]
-            nn.BatchNorm2d(3),
-            nn.LeakyReLU(True),
-            nn.Tanh(),
+            nn.LeakyReLU(negative_slope=0.01),
+            nn.Conv2d(32, 1, kernel_size=3, stride=1, padding=1),
+            nn.Upsample(size=(28, 28), mode="bilinear", align_corners=False),
         )
 
     def encode(self, input: Tensor) -> EncoderOutput:
@@ -96,9 +102,6 @@ class VanillaVAE(nn.Module):
         """
         result = self.encoder(input)
         result = torch.flatten(result, start_dim=1)
-        print(f"encoder output: {result.shape}")
-        print(f"mu: {self.fc_mu}")
-
         # Split the result into mu and var components
         mu = self.fc_mu(result)
         log_var = self.fc_var(result) + 1e-8  # to avoid Inf
@@ -113,14 +116,9 @@ class VanillaVAE(nn.Module):
         :return: (Tensor) [B x C x H x W]
         """
         result = self.decoder_input(z)
-        # result = result.view(-1, 512, 2, 2)
-        # result = result.view(-1, 2048, self.last_conv_size, self.last_conv_size)
-        print(f"decoder input: {result.shape}")
-
+        result = result.view(-1, 256, 2, 2)
         result = self.decoder(result)
-        # print(f"decoder output: {result.shape}")
-        # result = self.final_layer(result)
-        print(f"final output: {result.shape}")
+        result = self.final_layer(result)
         return result
 
     def reparameterize(self, mu: Tensor, logvar: Tensor) -> Tensor:
@@ -155,7 +153,7 @@ class VanillaVAE(nn.Module):
             -0.5 * torch.sum(1 + log_var - output_model["encoded"]["mu"] ** 2 - log_var_exp, dim=1),
             dim=0,
         )  # TODO move this to its own fn
-        loss = recons_loss + self.exp_params["kld_weight"] * kld_loss
+        loss = recons_loss + self.kld_weight * kld_loss
         return LossOutput(
             loss=loss,
             reconstruction_loss=recons_loss.detach(),
@@ -175,51 +173,15 @@ class VanillaVAE(nn.Module):
             init.ones_(m.weight)
             init.zeros_(m.bias)
 
-    ########################### lightning functions ###########################
-    def training_step(self, batch, batch_idx):
-        x, _ = batch
-        output = self.forward(x)
-        loss = self.loss(output)
-        self.log("train_loss", loss["loss"], prog_bar=True)
-        self.log("reconstruction_loss", loss["reconstruction_loss"], prog_bar=False)
-        self.log("kld_loss", loss["kld_loss"], prog_bar=False)
-        return loss["loss"]
-
-    def validation_step(self, batch, batch_idx):
-        x, _ = batch
-        output = self.forward(x)
-        loss = self.loss(output)
-        self.log("val_loss", loss["loss"], prog_bar=True)
-        self.log(
-            "val_reconstruction_loss",
-            loss["reconstruction_loss"],
-            prog_bar=False,
-        )
-        self.log("val_kld_loss", loss["kld_loss"], prog_bar=False)
-        return loss["loss"]
-
-    def configure_optimizers(self):
-        optimizer = optim.Adam(
-            self.parameters(),
-            lr=self.exp_params["learning_rate"],
-            weight_decay=self.exp_params["weight_decay"],
-        )
-        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=self.exp_params["scheduler_gamma"])
-        return {
-            "optimizer": optimizer,
-            "gradient_clip_val": 1.0,
-            "scheduler": scheduler,
-        }
-
     def on_after_backward(self):
         grad_norm = torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=2.0)
         self.log("grad_norm", grad_norm)
 
     def on_epoch_end(self):
         for name, params in self.named_parameters():
-            self.logger.experiment.add_histogram(name, params, self.current_epoch)  # type: ignore
+            self.logger.experiment.add_histogram(name, params, self.current_epoch)
 
-    ################################# utility #################################
+    # utility -----------------------------------------------------------------
     def sample(self, num_samples: int, current_device: int, **kwargs) -> Tensor:
         """
         Samples from the latent space and return the corresponding

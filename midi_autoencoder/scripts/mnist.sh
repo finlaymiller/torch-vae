@@ -1,6 +1,6 @@
 #!/bin/bash
 # run parameters
-
+JOB_NAME="test"
 # Manually define the project name.
 # This must also be the name of your conda environment used for this project.
 PROJECT_NAME="midi-autoencoder"
@@ -148,8 +148,7 @@ echo ""
 # signal will be ignored.
 torchrun \
     "$SCRIPT_PATH" \
-    --nnodes="$NUM_NODES" \
-    --nproc_per_node="$NUM_GPUS" \
+    --gpu="$NUM_GPUS" \
     --cpu-workers="$NUM_WORKERS" \
     --seed="$SEED" \
     --checkpoint="$CKPT_PTH" \
