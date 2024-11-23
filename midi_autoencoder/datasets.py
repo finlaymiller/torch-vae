@@ -34,11 +34,15 @@ def image_dataset_sizes(dataset):
         Number of colour channels in the images in the dataset. This will be
         1 for greyscale images, and 3 for colour images.
     """
-    dataset = dataset.lower().replace("-", "").replace("_", "").replace(" ", "")
+    # dataset = dataset.lower().replace("-", "").replace("_", "").replace(" ", "")
 
     if dataset.startswith("sageev"):
         num_classes = -1
         img_size = 128
+        num_channels = 1
+    elif dataset == "vae-lines":
+        num_classes = -1
+        img_size = 28
         num_channels = 1
     elif dataset == "mnist":
         num_classes = 10
@@ -80,7 +84,7 @@ def fetch_image_dataset(
         Whether to download the dataset to the expected directory if it is not
         there. Only supported by some datasets. Default is ``False``.
     """
-    dataset = dataset.lower().replace("-", "").replace("_", "").replace(" ", "")
+    # dataset = dataset.lower().replace("-", "").replace("_", "").replace(" ", "")
     if root:
         pass
     else:
@@ -98,6 +102,20 @@ def fetch_image_dataset(
         dataset_train, dataset_test = random_split(full_dataset, [train_size, test_size])
         dataset_test.transform = transform_eval
         dataset_val = None
+
+    if dataset == "vae-lines":
+        # Will read from [root]/[dataset]
+        # lazy import
+        from torch.utils.data import random_split
+
+        full_dataset = ImageFolder(os.path.join(root, dataset), transform=transform_train)
+        print(f"Loaded {len(full_dataset)} images")
+        train_size = int(TRAIN_TEST_RATIO * len(full_dataset))
+        test_size = len(full_dataset) - train_size
+        dataset_train, dataset_test = random_split(full_dataset, [train_size, test_size])
+        dataset_test.transform = transform_eval
+        dataset_val = None
+
     elif dataset == "mnist":
         # Will read from [root]/MNIST/processed
         dataset_train = torchvision.datasets.MNIST(

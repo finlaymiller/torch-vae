@@ -135,6 +135,7 @@ def run(config):
     transform_args = {}
     if config.dataset_name in data_transformations.VALID_TRANSFORMS:
         transform_args["normalization"] = config.dataset_name
+        print(f"normalization type set to {config.dataset_name}")
 
     transform_train, transform_eval = data_transformations.get_transform(
         config.transform_type, config.image_size, transform_args

@@ -1,5 +1,4 @@
 import torch
-import torch.nn.init as init
 from torch import Tensor, nn
 from torch.nn import functional as F
 from types_helpers import EncoderOutput, LossOutput, ModelOutput
@@ -227,12 +226,14 @@ class VanillaVAE(nn.Module):
         """
         Encodes the input by passing through the encoder network
         and returns the latent codes.
+
         Parameters
         ----------
         input : Tensor
             Input tensor to encoder [N x C x H x W]
         eps : float, default=1e-8
             Small value to avoid numerical instability.
+
         Returns
         -------
         encoder_output : EncoderOutput
@@ -248,10 +249,17 @@ class VanillaVAE(nn.Module):
 
     def decode(self, z: Tensor) -> Tensor:
         """
-        Maps the given latent codes
-        onto the image space.
-        :param z: (Tensor) [B x D]
-        :return: (Tensor) [B x C x H x W]
+        Maps the given latent codes onto the image space.
+
+        Parameters
+        ----------
+        z : Tensor
+            latent representation [B x D]
+
+        Returns
+        -------
+        decoded : Tensor
+            [B x C x H x W]
         """
         result = self.decoder_input(z)
         result = result.view(-1, 256, 2, 2)
@@ -261,11 +269,18 @@ class VanillaVAE(nn.Module):
 
     def reparameterize(self, mu: Tensor, logvar: Tensor) -> Tensor:
         """
-        Reparameterization trick to sample from N(mu, var) from
-        N(0,1).
-        :param mu: (Tensor) Mean of the latent Gaussian [B x D]
-        :param logvar: (Tensor) Standard deviation of the latent Gaussian [B x D]
-        :return: (Tensor) [B x D]
+        Reparameterization trick to sample from N(mu, var) from N(0,1).
+
+        Parameters
+        ----------
+        mu : Tensor
+            Mean of the latent Gaussian [B x D]
+        logvar : Tensor
+            Standard deviation of the latent Gaussian [B x D]
+        Returns
+        -------
+        sample : Tensor
+            [B x D]
         """
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
@@ -280,9 +295,19 @@ class VanillaVAE(nn.Module):
         r"""
         Computes the VAE loss function.
         KL(N(\mu, \sigma), N(0, 1)) = \log \frac{1}{\sigma} + \frac{\sigma^2 + \mu^2}{2} - \frac{1}{2}
-        :param args:
-        :param kwargs:
-        :return:
+
+        Parameters
+        ----------
+        input : Tensor
+        output : Tensor
+        logvar : Tensor
+        mu : Tensor
+
+        Returns
+        -------
+        loss : Tensor
+        reconstruction loss : Tensor
+        KLD loss : Tensor
         """
         recons_loss = F.mse_loss(output_model["output"], output_model["input"])
         log_var = torch.clamp(output_model["encoded"]["log_var"], min=-10, max=10)
@@ -297,27 +322,6 @@ class VanillaVAE(nn.Module):
             reconstruction_loss=recons_loss.detach(),
             kld_loss=-kld_loss.detach(),
         )
-
-    def _weights_init(self, m):
-        if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
-            init.kaiming_normal_(m.weight, nonlinearity="leaky_relu")
-            if m.bias is not None:
-                init.zeros_(m.bias)
-        elif isinstance(m, nn.Linear):
-            init.xavier_normal_(m.weight)
-            if m.bias is not None:
-                init.zeros_(m.bias)
-        elif isinstance(m, nn.BatchNorm2d):
-            init.ones_(m.weight)
-            init.zeros_(m.bias)
-
-    def on_after_backward(self):
-        grad_norm = torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=2.0)
-        self.log("grad_norm", grad_norm)
-
-    def on_epoch_end(self):
-        for name, params in self.named_parameters():
-            self.logger.experiment.add_histogram(name, params, self.current_epoch)
 
     # utility -----------------------------------------------------------------
     def sample(self, num_samples: int, current_device: int, **kwargs) -> Tensor:

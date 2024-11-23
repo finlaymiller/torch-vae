@@ -3,9 +3,10 @@ from torchvision.transforms import v2
 
 NORMALIZATION = {
     "mnist": [(0.1307,), (0.3081,)],  # TODO: investigate this
+    "vae-lines": [(0.5,), (1.0,)],
 }
 
-VALID_TRANSFORMS = ["mnist", "synthetic-midi", "midi"]
+VALID_TRANSFORMS = ["mnist", "vae-lines"]
 
 
 def get_transform(transform_type: str = "noaug", image_size: int = 32, args=None) -> tuple[v2.Transform, v2.Transform]:
@@ -39,6 +40,32 @@ def get_transform(transform_type: str = "noaug", image_size: int = 32, args=None
                 v2.ToImage(),
                 v2.ToDtype(torch.float32, scale=True),
                 v2.Normalize(mean=mean, std=std),
+            ]
+        )
+
+    elif transform_type == "midi":
+        # N.B. If the raw training image isn't square, there is a small
+        # "augmentation" as we will randomly crop a square (of length equal to
+        # the shortest side) from it. We do this because we assume inputs to
+        # the network must be square.
+        train_transform = v2.Compose(
+            [
+                v2.Resize(image_size),  # Resize shortest side to image_size
+                v2.RandomCrop(image_size),  # If it is not square, *random* crop
+                v2.ToImage(),  # recommended replacement for toTensor() 1/2
+                v2.ToDtype(torch.float32, scale=True),  # ------------- 2/2
+                v2.Normalize(mean=mean, std=std),
+                v2.Grayscale(),
+            ]
+        )
+        test_transform = v2.Compose(
+            [
+                v2.Resize(image_size),  # Resize shortest side to image_size
+                v2.CenterCrop(image_size),  # If it is not square, center crop
+                v2.ToImage(),
+                v2.ToDtype(torch.float32, scale=True),
+                v2.Normalize(mean=mean, std=std),
+                v2.Grayscale(),
             ]
         )
 
