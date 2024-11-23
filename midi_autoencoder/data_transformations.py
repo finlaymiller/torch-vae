@@ -2,7 +2,7 @@ import torch
 from torchvision.transforms import v2
 
 NORMALIZATION = {
-    "mnist": [(0.1307,), (0.3081,)],
+    "mnist": [(0.1307,), (0.3081,)],  # TODO: investigate this
 }
 
 VALID_TRANSFORMS = ["mnist", "synthetic-midi", "midi"]
@@ -49,6 +49,7 @@ def get_transform(transform_type: str = "noaug", image_size: int = 32, args=None
         # - Don't flip the images (that would change the digit)
         # - Randomly adjust brightness/contrast/saturation
         # - (No rotation or skew)
+        # TODO: reimplement this:
         # train_transform = timm.data.create_transform(
         #     input_size=image_size,
         #     is_training=True,

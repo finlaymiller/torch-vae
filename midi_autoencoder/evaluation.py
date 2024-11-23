@@ -3,10 +3,10 @@ Evaluation routines.
 """
 
 import numpy as np
-import sklearn.metrics
 import torch
 import torch.nn.functional as F
-import utils
+from rich import print
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 
 def evaluate(
@@ -15,7 +15,6 @@ def evaluate(
     device,
     partition_name="Val",
     verbosity=1,
-    is_distributed=False,
 ):
     r"""
     Evaluate model performance on a dataset.
@@ -42,55 +41,69 @@ def evaluate(
     """
     model.eval()
 
-    y_true_all = []
-    y_pred_all = []
+    stim_all = []
     xent_all = []
+    reconst_all = []
+    latent_all = []
 
-    for stimuli, y_true in dataloader:
+    # confirm data range of dataset
+    stim_min = torch.inf
+    stim_max = -torch.inf
+    reconst_min = torch.inf
+    reconst_max = -torch.inf
+
+    for stimuli, _ in dataloader:
+        if stimuli.min() < stim_min:
+            stim_min = stimuli.min()
+        if stimuli.max() > stim_max:
+            stim_max = stimuli.max()
+
         stimuli = stimuli.to(device)
-        y_true = y_true.to(device)
         with torch.no_grad():
-            logits = model(stimuli)
-            xent = F.cross_entropy(logits, y_true, reduction="none")
-            y_pred = torch.argmax(logits, dim=-1)
+            output = model(stimuli)
+            reconstruction = output["output"]
+            latent = output["latents"]
+            xent = F.cross_entropy(reconstruction, stimuli, reduction="none")
 
-        if is_distributed:
-            # Fetch results from other GPUs
-            xent = utils.concat_all_gather_ragged(xent)
-            y_true = utils.concat_all_gather_ragged(y_true)
-            y_pred = utils.concat_all_gather_ragged(y_pred)
+        if reconstruction.min() < reconst_min:
+            reconst_min = reconstruction.min()
+        if reconstruction.max() > reconst_max:
+            reconst_max = reconstruction.max()
 
         xent_all.append(xent.cpu().numpy())
-        y_true_all.append(y_true.cpu().numpy())
-        y_pred_all.append(y_pred.cpu().numpy())
+        stim_all.append(stimuli.cpu().numpy())
+        reconst_all.append(reconstruction.cpu().numpy())
+        latent_all.append(latent.cpu().numpy())
+
+    print(f"input has range  [{stim_min:.03f}, {stim_max:.03f}]")
+    print(f"output has range [{reconst_min:.03f}, {reconst_max:.03f}]")
 
     # Concatenate the targets and predictions from each batch
     xent = np.concatenate(xent_all)
-    y_true = np.concatenate(y_true_all)
-    y_pred = np.concatenate(y_pred_all)
+    stimuli = np.concatenate(stim_all)
+    reconst = np.concatenate(reconst_all)
+    latents = np.concatenate(latent_all)
     # If the dataset size was not evenly divisible by the world size,
     # DistributedSampler will pad the end of the list of samples
     # with some repetitions. We need to trim these off.
     n_samples = len(dataloader.dataset)
     xent = xent[:n_samples]
-    y_true = y_true[:n_samples]
-    y_pred = y_pred[:n_samples]
+    stimuli = stimuli[:n_samples]
+    reconst = reconst[:n_samples]
+    latents = latents[:n_samples]
     # Create results dictionary
     results = {}
-    results["count"] = len(y_true)
+    results["count"] = len(stimuli)
     results["cross-entropy"] = np.mean(xent)
     # Note that these evaluation metrics have all been converted to percentages
-    results["accuracy"] = 100.0 * sklearn.metrics.accuracy_score(y_true, y_pred)
-    results["accuracy-balanced"] = 100.0 * sklearn.metrics.balanced_accuracy_score(y_true, y_pred)
-    results["f1-micro"] = 100.0 * sklearn.metrics.f1_score(y_true, y_pred, average="micro")
-    results["f1-macro"] = 100.0 * sklearn.metrics.f1_score(y_true, y_pred, average="macro")
-    results["f1-support"] = 100.0 * sklearn.metrics.f1_score(y_true, y_pred, average="weighted")
+    results["mse"] = 100.0 * mean_squared_error(stimuli.flatten(), reconst.flatten())
+    results["mae"] = 100.0 * mean_absolute_error(stimuli.flatten(), reconst.flatten())
     # Could expand to other metrics too
 
     if verbosity >= 1:
         print(f"\n{partition_name} evaluation results:")
         for k, v in results.items():
-            if k == "count":
+            if "count" in k:
                 print(f"  {k + ' ':.<21s}{v:7d}")
             elif "entropy" in k:
                 print(f"  {k + ' ':.<24s} {v:9.5f} nat")

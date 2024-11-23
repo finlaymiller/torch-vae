@@ -5,8 +5,144 @@ from torch.nn import functional as F
 from types_helpers import EncoderOutput, LossOutput, ModelOutput
 
 
+class VAE(nn.Module):
+    """
+    Variational Autoencoder (VAE) class.
+
+    Parameters
+    ----------
+    input_dim : int
+        Dimensionality of the input data.
+    hidden_dim : int
+        Dimensionality of the hidden layer.
+    latent_dim : int
+        Dimensionality of the latent space.
+    """
+
+    name = "VAE"
+
+    def __init__(self, input_dim: int, hidden_dim: int, latent_dim: int):
+        super(VAE, self).__init__()
+
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.SiLU(),  # Swish activation function
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.SiLU(),  # Swish activation function
+            nn.Linear(hidden_dim // 2, hidden_dim // 4),
+            nn.SiLU(),  # Swish activation function
+            # nn.Linear(hidden_dim // 4, hidden_dim // 8),
+            # nn.SiLU(),  # Swish activation function
+            nn.Linear(hidden_dim // 4, 2 * latent_dim),  # 2 for mean and variance.
+        )
+        self.softplus = nn.Softplus()
+
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_dim, hidden_dim // 4),
+            nn.SiLU(),  # Swish activation function
+            # nn.Linear(hidden_dim // 8, hidden_dim // 4),
+            # nn.SiLU(),  # Swish activation function
+            nn.Linear(hidden_dim // 4, hidden_dim // 2),
+            nn.SiLU(),  # Swish activation function
+            nn.Linear(hidden_dim // 2, hidden_dim),
+            nn.SiLU(),  # Swish activation function
+            nn.Linear(hidden_dim, input_dim),
+            nn.Sigmoid(),
+        )
+
+    def encode(self, x: Tensor, eps: float = 1e-8):
+        """
+        Encodes the input data into the latent space.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input data.
+        eps : float, default=1e-8
+            Small value to avoid numerical instability.
+
+        Returns
+        -------
+        z : torch.distributions.MultivariateNormal
+            Normal distribution of the encoded data.
+        """
+        x = self.encoder(x)
+        mu, logvar = torch.chunk(x, 2, dim=-1)
+        scale = self.softplus(logvar) + eps
+        scale_tril = torch.diag_embed(scale)
+
+        return torch.distributions.MultivariateNormal(mu, scale_tril=scale_tril)
+
+    def reparameterize(self, dist):
+        """
+        Reparameterizes the encoded data to sample from the latent space.
+
+        Parameters
+        ----------
+        dist : torch.distributions.MultivariateNormal
+            Normal distribution of the encoded data.
+
+        Returns
+        -------
+        sample : torch.Tensor
+            Sampled data from the latent space.
+        """
+        return dist.rsample()
+
+    def decode(self, z: Tensor) -> Tensor:
+        """
+        Decodes the data from the latent space to the original input space.
+
+        Parameters
+        ----------
+        z : torch.Tensor)
+            Data in the latent space.
+
+        Returns
+        -------
+        reconstruction : torch.Tensor
+            Reconstructed data in the original input space.
+        """
+        return self.decoder(z)
+
+    def forward(self, x: Tensor):
+        """
+        Performs a forward pass of the VAE.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input data.
+        compute_loss : bool
+            Whether to compute the loss or not.
+
+        Returns
+        -------
+            ModelOutput: Model output dataclass.
+        """
+        dist = self.encode(x)
+        z = self.reparameterize(dist)
+        recon_x = self.decode(z)
+
+        # # compute loss terms
+        # loss_recon = F.binary_cross_entropy(recon_x, x + 0.5, reduction="none").sum(-1).mean()
+        # std_normal = torch.distributions.MultivariateNormal(
+        #     torch.zeros_like(z, device=z.device),
+        #     scale_tril=torch.eye(z.shape[-1], device=z.device).unsqueeze(0).expand(z.shape[0], -1, -1),
+        # )
+        # loss_kl = torch.distributions.kl.kl_divergence(dist, std_normal).mean()
+
+        # loss = loss_recon + loss_kl
+
+        return ModelOutput(output=recon_x, input=x, encoded=dist, latents=z)
+
+
 class VanillaVAE(nn.Module):
-    """Implementation of the classical VAE
+    """
+    Implementation of the classical VAE
+
+    Parameters
+    ----------
     latent_dim: int
         dimension of the latent space
     encoder: nn.Module
@@ -20,6 +156,8 @@ class VanillaVAE(nn.Module):
     fc_var: nn.Module
         linear Module which "learns" the log-var vector of the latents distribution
     """
+
+    name = "VanillaVAE"
 
     def __init__(
         self,
@@ -77,14 +215,6 @@ class VanillaVAE(nn.Module):
 
         self.decoder = nn.Sequential(*modules)
 
-        # self.final_layer = nn.Sequential(
-        # nn.ConvTranspose2d(hidden_dims[-1], hidden_dims[-1], kernel_size=3, stride=2, padding=1, output_padding=1),
-        #     nn.BatchNorm2d(hidden_dims[-1]),
-        #     nn.LeakyReLU(),
-        #     nn.Conv2d(hidden_dims[-1], out_channels=1, kernel_size=3, padding=1),
-        #     nn.Tanh(),
-        # )
-
         self.final_layer = nn.Sequential(
             nn.ConvTranspose2d(32, 32, kernel_size=3, stride=2, padding=1, output_padding=0),
             nn.BatchNorm2d(32),
@@ -93,18 +223,26 @@ class VanillaVAE(nn.Module):
             nn.Upsample(size=(28, 28), mode="bilinear", align_corners=False),
         )
 
-    def encode(self, input: Tensor) -> EncoderOutput:
+    def encode(self, input: Tensor, eps: float = 1e-8) -> EncoderOutput:
         """
         Encodes the input by passing through the encoder network
         and returns the latent codes.
-        :param input: (Tensor) Input tensor to encoder [N x C x H x W]
-        :return: (Tensor) List of latent codes
+        Parameters
+        ----------
+        input : Tensor
+            Input tensor to encoder [N x C x H x W]
+        eps : float, default=1e-8
+            Small value to avoid numerical instability.
+        Returns
+        -------
+        encoder_output : EncoderOutput
+            List of latent codes, mu, and logvar
         """
         result = self.encoder(input)
         result = torch.flatten(result, start_dim=1)
         # Split the result into mu and var components
         mu = self.fc_mu(result)
-        log_var = self.fc_var(result) + 1e-8  # to avoid Inf
+        log_var = self.fc_var(result) + eps  # to avoid Inf
 
         return EncoderOutput(mu=mu, log_var=log_var, pre_latents=result)
 

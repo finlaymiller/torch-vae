@@ -107,7 +107,8 @@ def run(config):
         print(f"Setting model input image size to dataset's image size: {raw_img_size}")
         config.image_size = raw_img_size
     print(f"loading model for '{config.dataset_name}' dataset")
-    model = VanillaVAE(img_channels, config.n_features)  # TODO: make this programmatic, handle lr
+    model = VanillaVAE(img_channels, config.n_features)
+    # model = VAE(input_dim=raw_img_size**2, hidden_dim=512, latent_dim=2)
     # holdover from original script, for compatibility
     encoder_config = {
         "input_size": raw_img_size,
@@ -397,7 +398,7 @@ def run(config):
         n_epoch_samples = n_samples_seen - n_samples_seen_before
         train_stats["throughput"] = n_epoch_samples / timing_stats["train"]
 
-        print(f"Training epoch {epoch}/{config.epochs} summary:")
+        print(f"\nTraining epoch {epoch}/{config.epochs} summary:")
         print(f"  Steps ..............{len(dataloader_train):8d}")
         print(f"  Samples ............{n_epoch_samples:8d}")
         if timing_stats["train"] > 172800:
@@ -420,7 +421,6 @@ def run(config):
             model=model,
             device=device,
             partition_name=eval_set,
-            is_distributed=False,
         )
         t_end_val = time.time()
         timing_stats["val"] = t_end_val - t_start_val
@@ -473,14 +473,14 @@ def run(config):
 
         # Send training and eval stats for this epoch to wandb
         if config.log_wandb and config.global_rank == 0:
-            pre = "Training/epochwise"
+            pre = "training/epochwise"
             wandb.log(
                 {
-                    "Training/stepwise/epoch": epoch,
-                    "Training/stepwise/epoch_progress": epoch,
-                    "Training/stepwise/n_samples_seen": n_samples_seen,
+                    "training/stepwise/epoch": epoch,
+                    "training/stepwise/epoch_progress": epoch,
+                    "training/stepwise/n_samples_seen": n_samples_seen,
                     f"{pre}/epoch": epoch,
-                    **{f"{pre}/Train/{k}": v for k, v in train_stats.items()},
+                    **{f"{pre}/train/{k}": v for k, v in train_stats.items()},
                     **{f"{pre}/{eval_set}/{k}": v for k, v in eval_stats.items()},
                     **{f"{pre}/duration/{k}": v for k, v in timing_stats.items()},
                 },
@@ -508,11 +508,10 @@ def run(config):
         model=model,
         device=device,
         partition_name="Test",
-        is_distributed=False,
     )
     # Send stats to wandb
     if config.log_wandb and config.global_rank == 0:
-        wandb.log({**{f"Eval/Test/{k}": v for k, v in eval_stats.items()}}, step=total_step)
+        wandb.log({**{f"eval/test/{k}": v for k, v in eval_stats.items()}}, step=total_step)
 
     if distinct_val_test:
         # Evaluate on validation set
@@ -522,12 +521,11 @@ def run(config):
             model=model,
             device=device,
             partition_name=eval_set,
-            is_distributed=False,
         )
         # Send stats to wandb
         if config.log_wandb and config.global_rank == 0:
             wandb.log(
-                {**{f"Eval/{eval_set}/{k}": v for k, v in eval_stats.items()}},
+                {**{f"eval/{eval_set}/{k}": v for k, v in eval_stats.items()}},
                 step=total_step,
             )
 
@@ -546,7 +544,6 @@ def run(config):
         model=model,
         device=device,
         partition_name="Train",
-        is_distributed=False,
     )
     # Send stats to wandb
     if config.log_wandb and config.global_rank == 0:
@@ -634,11 +631,11 @@ def train_one_epoch(
         ct_forward.record()
         with torch.no_grad() if config.freeze_encoder else nullcontext():
             output = model.forward(stimuli)
-        logits = output["output"]
+            reconstruction = output["output"]
         # Reset gradients
         optimizer.zero_grad()
         # Measure loss
-        loss = criterion(logits, stimuli)
+        loss = criterion(reconstruction, stimuli)
 
         # Backward pass -------------------------------------------------------
         # Now the backward pass
@@ -672,11 +669,11 @@ def train_one_epoch(
         if epoch <= 1 and batch_idx == 0:
             # Debugging
             print("stimuli.shape =", stimuli.shape)
-            print("logits.shape  =", logits.shape)
+            print("logits.shape  =", reconstruction.shape)
             print("loss.shape    =", loss.shape)
             # Debugging intensifies
             print("y_true =", y_true)
-            print("logits[0] =", logits[0])
+            print("logits[0] =", reconstruction[0])
             print("loss =", loss.detach().item())
 
         # Log sample training images to show on wandb
@@ -684,10 +681,14 @@ def train_one_epoch(
             # Log 8 example training images from each GPU
             img_indices = [offset + relative for offset in [0, batch_size_this_gpu // 2] for relative in [0, 1, 2, 3]]
             img_indices = sorted(set(img_indices))
-            log_images = stimuli[img_indices]
+            stimuli_images = stimuli[img_indices]
+            reconst_images = reconstruction[img_indices]
+            paired_images = [torch.cat((img1, img2), dim=2) for img1, img2 in zip(reconst_images, stimuli_images)]
+            rows = [torch.cat(paired_images[i : i + 4], dim=2) for i in range(0, len(paired_images), 4)]
+            final_grid = torch.cat(rows, dim=1)
             if config.global_rank == 0:
                 wandb.log(
-                    {"Training/stepwise/Train/stimuli": wandb.Image(log_images)},
+                    {"training/stepwise/train/reconstruction": wandb.Image(final_grid)},
                     step=total_step,
                 )
 
@@ -708,11 +709,11 @@ def train_one_epoch(
             # Throughput is the number of samples processed per second
             throughput = batch_size_all / (t_start_logging - t_end_batch)
             log_dict = {
-                "Training/stepwise/epoch": epoch,
-                "Training/stepwise/epoch_progress": epoch_progress,
-                "Training/stepwise/n_samples_seen": n_samples_seen,
-                "Training/stepwise/Train/throughput": throughput,
-                "Training/stepwise/Train/loss": loss_batch,
+                "training/stepwise/epoch": epoch,
+                "training/stepwise/epoch_progress": epoch_progress,
+                "training/stepwise/n_samples_seen": n_samples_seen,
+                "training/stepwise/train/throughput": throughput,
+                "training/stepwise/train/loss": loss_batch,
             }
             # Track the learning rate of each parameter group
             for lr_idx in range(len(optimizer.param_groups)):
@@ -725,11 +726,11 @@ def train_one_epoch(
                 if grp_name != "":
                     grp_name = f"-{grp_name}"
                 grp_lr = optimizer.param_groups[lr_idx]["lr"]
-                log_dict[f"Training/stepwise/lr{grp_name}"] = grp_lr
+                log_dict[f"training/stepwise/lr{grp_name}"] = grp_lr
             # Synchronize ensures everything has finished running on each GPU
             torch.cuda.synchronize()
             # Record how long it took to do each step in the pipeline
-            pre = "Training/stepwise/duration"
+            pre = "training/stepwise/duration"
             if t_start_wandb is not None:
                 # Record how long it took to send to wandb last time
                 log_dict[f"{pre}/wandb"] = t_end_wandb - t_start_wandb
