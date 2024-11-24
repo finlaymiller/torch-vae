@@ -107,7 +107,7 @@ def run(config):
         print(f"Setting model input image size to dataset's image size: {raw_img_size}")
         config.image_size = raw_img_size
     print(f"loading model for '{config.dataset_name}' dataset")
-    model = VanillaVAE(img_channels, config.n_features)
+    model = VanillaVAE(img_channels, config.n_features)  # , hidden_dims=[128, 256, 512])
     # model = VAE(input_dim=raw_img_size**2, hidden_dim=512, latent_dim=2)
     # holdover from original script, for compatibility
     encoder_config = {
@@ -684,7 +684,7 @@ def train_one_epoch(
             img_indices = sorted(set(img_indices))
             stimuli_images = stimuli[img_indices]
             reconst_images = reconstruction[img_indices]
-            paired_images = [torch.cat((img1, img2), dim=2) for img1, img2 in zip(reconst_images, stimuli_images)]
+            paired_images = [torch.cat((img1, img2), dim=2) for img1, img2 in zip(stimuli_images, reconst_images)]
             rows = [torch.cat(paired_images[i : i + 4], dim=2) for i in range(0, len(paired_images), 4)]
             final_grid = torch.cat(rows, dim=1)
             if config.global_rank == 0:

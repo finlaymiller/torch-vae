@@ -4,9 +4,10 @@ from torchvision.transforms import v2
 NORMALIZATION = {
     "mnist": [(0.1307,), (0.3081,)],  # TODO: investigate this
     "vae-lines": [(0.5,), (1.0,)],
+    "vae-lines-large": [(0.5,), (1.0,)],
 }
 
-VALID_TRANSFORMS = ["mnist", "vae-lines"]
+VALID_TRANSFORMS = ["mnist", "vae-lines", "vae-lines-large"]
 
 
 def get_transform(transform_type: str = "noaug", image_size: int = 32, args=None) -> tuple[v2.Transform, v2.Transform]:

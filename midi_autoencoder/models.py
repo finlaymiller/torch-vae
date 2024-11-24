@@ -166,7 +166,7 @@ class VanillaVAE(nn.Module):
         weight_decay: float = 0.00001,
         kld_weight: float = 0.00025,
         scheduler_gamma: float = 0.1,
-        hidden_dims=None,
+        hidden_dims: list[int] = None,
         **kwargs,
     ):
         super(VanillaVAE, self).__init__()
@@ -221,6 +221,7 @@ class VanillaVAE(nn.Module):
             nn.Conv2d(32, 1, kernel_size=3, stride=1, padding=1),
             nn.Upsample(size=(28, 28), mode="bilinear", align_corners=False),
         )
+        hidden_dims.reverse()
 
     def encode(self, input: Tensor, eps: float = 1e-8) -> EncoderOutput:
         """
@@ -262,7 +263,7 @@ class VanillaVAE(nn.Module):
             [B x C x H x W]
         """
         result = self.decoder_input(z)
-        result = result.view(-1, 256, 2, 2)
+        result = result.view(-1, self.hidden_dims[-1], 2, 2)
         result = self.decoder(result)
         result = self.final_layer(result)
         return result

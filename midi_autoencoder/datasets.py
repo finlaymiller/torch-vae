@@ -44,6 +44,10 @@ def image_dataset_sizes(dataset):
         num_classes = -1
         img_size = 28
         num_channels = 1
+    elif dataset == "vae-lines-large":
+        num_classes = -1
+        img_size = 128
+        num_channels = 1
     elif dataset == "mnist":
         num_classes = 10
         img_size = 28
@@ -103,7 +107,7 @@ def fetch_image_dataset(
         dataset_test.transform = transform_eval
         dataset_val = None
 
-    if dataset == "vae-lines":
+    elif dataset.startswith("vae-lines"):
         # Will read from [root]/[dataset]
         # lazy import
         from torch.utils.data import random_split

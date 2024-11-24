@@ -18,14 +18,22 @@ def generate_line_images(
     Generates a dataset of black and white images composed of vertical and horizontal lines,
     grouped into class folders. Classes are based on the number of lines in the image.
 
-    Args:
-        num_images (int): Number of images to generate.
-        output_path (str): Directory to store the generated images.
-        img_size (tuple): Height and width of the images as (height, width). Default: (28, 28)
-        max_lines (int): Maximum number of lines allowed per image. Default: 2
-        line_width (int): Line width in pixels. Random (1-5) if set to 0. Default: 1
-        full_length (bool): Whether all lines should span the entire image. Default: True
-        filter_duplicates (bool): Whether to filter out duplicate images. Default: True
+    Parameters
+    ----------
+    num_images : int
+        Number of images to generate.
+    output_path : str
+        Directory to store the generated images.
+    img_size : tuple, default=(28, 28)
+        Height and width of the images as (height, width)
+    max_lines : int, default=2
+        Maximum number of lines allowed per image.
+    line_width : int, default=1
+        Line width in pixels. Random (1-5) if set to 0.
+    full_length : bool, default=True
+        Whether all lines should span the entire image.
+    filter_duplicates : bool, default=True
+        Whether to filter out duplicate images.
     """
     if not os.path.exists(output_path):
         os.makedirs(output_path)
@@ -86,4 +94,11 @@ def generate_line_images(
 
 
 if __name__ == "__main__":
-    generate_line_images(100000, "/media/nova/Datasets/vae-lines")
+    generate_line_images(
+        100000,
+        "/media/nova/Datasets/vae-lines-large",
+        img_size=(128, 128),
+        max_lines=20,
+        line_width=0,
+        full_length=False,
+    )
