@@ -103,12 +103,12 @@ def run(config):
     # We have to build the model before we load the dataset because it will
     # inform us about what size images we should produce in the preprocessing pipeline.
     n_class, raw_img_size, img_channels = datasets.image_dataset_sizes(config.dataset_name)
+    raw_img_size = 32
     if not hasattr(config, "image_size") or config.image_size is None:
         print(f"Setting model input image size to dataset's image size: {raw_img_size}")
         config.image_size = raw_img_size
     print(f"loading model for '{config.dataset_name}' dataset")
-    model = VanillaVAE(img_channels, config.n_features)  # , hidden_dims=[128, 256, 512])
-    # model = VAE(input_dim=raw_img_size**2, hidden_dim=512, latent_dim=2)
+    model = VanillaVAE(img_channels, config.n_features, input_dim=raw_img_size)
     # holdover from original script, for compatibility
     encoder_config = {
         "input_size": raw_img_size,
@@ -563,6 +563,7 @@ def train_one_epoch(
     n_epoch=None,
     total_step=0,
     n_samples_seen=0,
+    verbose=False,
 ):
     r"""
     Train the model for one epoch.
@@ -633,6 +634,10 @@ def train_one_epoch(
         with torch.no_grad() if config.freeze_encoder else nullcontext():
             output = model.forward(stimuli)
             reconstruction = output["output"]
+        if verbose:
+            print(f"in response to stimuli {stimuli.shape}, [{stimuli.min(), stimuli.max()}]")
+            print(f"model reconstructed {reconstruction.shape}, [{reconstruction.min(), reconstruction.max()}]")
+
         # Reset gradients
         optimizer.zero_grad()
         # Measure loss

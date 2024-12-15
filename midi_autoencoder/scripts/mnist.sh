@@ -1,6 +1,6 @@
 #!/bin/bash
 # run parameters
-JOB_NAME="synthetic-midi"
+JOB_NAME="mnist"
 # Manually define the project name.
 # This must also be the name of your conda environment used for this project.
 PROJECT_NAME="midi-autoencoder"

@@ -2,7 +2,8 @@ import torch
 from torchvision.transforms import v2
 
 NORMALIZATION = {
-    "mnist": [(0.1307,), (0.3081,)],  # TODO: investigate this
+    # "mnist": [(0.1307,), (0.3081,)],  # TODO: investigate this
+    "mnist": [(0.5,), (1.0,)],
     "vae-lines": [(0.5,), (1.0,)],
     "vae-lines-large": [(0.5,), (1.0,)],
 }

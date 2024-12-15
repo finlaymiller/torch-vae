@@ -159,29 +159,29 @@ class VanillaVAE(nn.Module):
     name = "VanillaVAE"
 
     def __init__(
-        self,
-        in_channels,
-        latent_dim,
-        learning_rate: float = 0.001,
-        weight_decay: float = 0.00001,
-        kld_weight: float = 0.00025,
-        scheduler_gamma: float = 0.1,
-        hidden_dims: list[int] = None,
-        **kwargs,
+        self, in_channels: int, embed_dim: int, input_dim: int, hidden_dims: list[int] = None, verbose: bool = False
     ):
         super(VanillaVAE, self).__init__()
 
-        self.latent_dim = latent_dim
-        self.kld_weight = kld_weight
-        self.learning_rate = learning_rate
-        self.weight_decay = weight_decay
-        self.scheduler_gamma = scheduler_gamma
-        self.last_conv_size = 4
+        self.latent_dim = embed_dim
+        self.input_dim = input_dim
+        self.in_channels = in_channels
+        self.verbose = verbose
 
+        # Default hidden dimensions
         if hidden_dims is None:
             hidden_dims = [32, 64, 128, 256]
         self.hidden_dims = hidden_dims
 
+        # Compute the output size after the encoder
+        self.last_conv_size = 4  # self._compute_conv_output_size(input_dim, len(hidden_dims))
+        if self.verbose:
+            print(f"last convolution will have size {self.last_conv_size}")
+        self.flattened_size = self.last_conv_size * hidden_dims[-1]
+        if self.verbose:
+            print(f"final flattened size {self.flattened_size}")
+
+        # Encoder
         modules = []
         for h_dim in hidden_dims:
             modules.append(
@@ -192,12 +192,14 @@ class VanillaVAE(nn.Module):
                 )
             )
             in_channels = h_dim
-
         self.encoder = nn.Sequential(*modules)
-        self.fc_mu = nn.Linear(hidden_dims[-1] * 4, latent_dim)
-        self.fc_var = nn.Linear(hidden_dims[-1] * 4, latent_dim)
 
-        self.decoder_input = nn.Linear(latent_dim, hidden_dims[-1] * 4)
+        # Latent space
+        self.fc_mu = nn.Linear(self.flattened_size, self.latent_dim)
+        self.fc_var = nn.Linear(self.flattened_size, self.latent_dim)
+
+        # Decoder
+        self.decoder_input = nn.Linear(self.latent_dim, self.flattened_size)
         hidden_dims.reverse()
 
         modules = []
@@ -215,80 +217,90 @@ class VanillaVAE(nn.Module):
         self.decoder = nn.Sequential(*modules)
 
         self.final_layer = nn.Sequential(
-            nn.ConvTranspose2d(32, 32, kernel_size=3, stride=2, padding=1, output_padding=0),
+            nn.ConvTranspose2d(32, 32, kernel_size=3, stride=2, padding=1, output_padding=1),
             nn.BatchNorm2d(32),
             nn.LeakyReLU(negative_slope=0.01),
             nn.Conv2d(32, 1, kernel_size=3, stride=1, padding=1),
-            nn.Upsample(size=(28, 28), mode="bilinear", align_corners=False),
+            # nn.Upsample(size=(28, 28), mode="bilinear", align_corners=False),
         )
-        hidden_dims.reverse()
 
-    def encode(self, input: Tensor, eps: float = 1e-8) -> EncoderOutput:
+    def _compute_conv_output_size(self, dim: int, num_layers: int, kernel: int = 3, stride: int = 2, padding: int = 1):
         """
-        Encodes the input by passing through the encoder network
-        and returns the latent codes.
+        Computes the size of the output after a series of convolutional layers.
 
         Parameters
         ----------
-        input : Tensor
-            Input tensor to encoder [N x C x H x W]
-        eps : float, default=1e-8
-            Small value to avoid numerical instability.
+        height : int
+            Height of the input image.
+        width : int
+            Width of the input image.
+        num_layers : int
+            Number of convolutional layers.
 
         Returns
         -------
-        encoder_output : EncoderOutput
-            List of latent codes, mu, and logvar
+        size : int
+            Size of the final feature map (assumes square feature maps).
         """
-        result = self.encoder(input)
-        result = torch.flatten(result, start_dim=1)
-        # Split the result into mu and var components
-        mu = self.fc_mu(result)
-        log_var = self.fc_var(result) + eps  # to avoid Inf
+        for _ in range(num_layers):
+            dim = (dim - kernel + stride * padding) // stride + 1
+        return dim
 
-        return EncoderOutput(mu=mu, log_var=log_var, pre_latents=result)
+    def encode(self, x: Tensor) -> EncoderOutput:
+        """
+        Encodes the input and returns mu and log_var.
+        """
+        if self.verbose:
+            print(f"encoder input: {x.shape} [{x.min()}, {x.max()}]")
+        x_hat = self.encoder(x)
+        if self.verbose:
+            print(f"encoder result: {x_hat.shape} [{x_hat.min()}, {x_hat.max()}]")
+        x_hat = x_hat.flatten(start_dim=1)
+        if self.verbose:
+            print(f"flatten result: {x_hat.shape} [{x_hat.min()}, {x_hat.max()}]")
+        mu = self.fc_mu(x_hat)
+        if self.verbose:
+            print(f"mu result: {mu.shape} [{mu.min()}, {mu.max()}]")
+        log_var = self.fc_var(x_hat)
+        if self.verbose:
+            print(f"log_var result: {log_var.shape} [{log_var.min()}, {log_var.max()}]")
+        return EncoderOutput(mu=mu, log_var=log_var, pre_latents=x_hat)
 
     def decode(self, z: Tensor) -> Tensor:
         """
-        Maps the given latent codes onto the image space.
-
-        Parameters
-        ----------
-        z : Tensor
-            latent representation [B x D]
-
-        Returns
-        -------
-        decoded : Tensor
-            [B x C x H x W]
+        Decodes the latent representation z.
         """
-        result = self.decoder_input(z)
-        result = result.view(-1, self.hidden_dims[-1], 2, 2)
-        result = self.decoder(result)
-        result = self.final_layer(result)
-        return result
+        x = self.decoder_input(z)
+        if self.verbose:
+            (f"decoder input result: {x.shape}  [{x.min()}, {x.max()}]")
+        # x = x.view(
+        #     -1,
+        #     self.hidden_dims[-1],
+        #     self.last_conv_size,
+        #     self.last_conv_size,
+        # )  # Reshape to match the decoder's input
+        x = x.view(-1, 256, 2, 2)
 
-    def reparameterize(self, mu: Tensor, logvar: Tensor) -> Tensor:
+        x = self.decoder(x)
+        if self.verbose:
+            print(f"decoder result: {x.shape}  [{x.min()}, {x.max()}]")
+        x = self.final_layer(x)
+
+        return x
+
+    def reparameterize(self, mu, log_var):
         """
         Reparameterization trick to sample from N(mu, var) from N(0,1).
-
-        Parameters
-        ----------
-        mu : Tensor
-            Mean of the latent Gaussian [B x D]
-        logvar : Tensor
-            Standard deviation of the latent Gaussian [B x D]
-        Returns
-        -------
-        sample : Tensor
-            [B x D]
         """
-        std = torch.exp(0.5 * logvar)
+        std = torch.exp(0.5 * log_var)
         eps = torch.randn_like(std)
         return eps * std + mu
 
-    def forward(self, input: Tensor) -> ModelOutput:
-        encoding = self.encode(input)
+    def forward(self, x):
+        """
+        Forward pass through the VAE.
+        """
+        encoding = self.encode(x)
         z = self.reparameterize(encoding["mu"], encoding["log_var"])
         return ModelOutput(output=self.decode(z), input=input, encoded=encoding, latents=z)
 
