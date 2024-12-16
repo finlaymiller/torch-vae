@@ -12,7 +12,6 @@ import utils
 from evaluation import evaluate
 from models import VanillaVAE
 from rich import print
-from torch import nn
 
 BASE_BATCH_SIZE = 128
 
@@ -242,7 +241,7 @@ def run(config):
 
     # Loss function -----------------------------------------------------------
     # Set up loss function
-    criterion = nn.MSELoss()
+    criterion = model.loss  # nn.MSELoss()
 
     # LOGGING =================================================================
     # Setup logging and saving
@@ -641,13 +640,13 @@ def train_one_epoch(
         # Reset gradients
         optimizer.zero_grad()
         # Measure loss
-        loss = criterion(reconstruction, stimuli)
+        loss_output = criterion(output)
 
         # Backward pass -------------------------------------------------------
         # Now the backward pass
         ct_backward = torch.cuda.Event(enable_timing=True)
         ct_backward.record()
-        loss.backward()
+        loss_output["loss"].backward()
 
         # Update --------------------------------------------------------------
         # Use our optimizer to update the model parameters
@@ -669,18 +668,19 @@ def train_one_epoch(
         ct_logging = torch.cuda.Event(enable_timing=True)
         ct_logging.record()
 
-        loss_batch = loss.item()
+        loss_batch = loss_output["loss"].detach().item()
+        loss_kld = loss_output["kld_loss"].detach().item()
         loss_epoch += loss_batch
 
         if epoch <= 1 and batch_idx == 0:
             # Debugging
             print("stimuli.shape =", stimuli.shape)
             print("logits.shape  =", reconstruction.shape)
-            print("loss.shape    =", loss.shape)
+            print("loss.shape    =", loss_output["loss"].shape)
             # Debugging intensifies
             print("y_true =", y_true)
             print("logits[0] =", reconstruction[0])
-            print("loss =", loss.detach().item())
+            print("loss =", loss_batch)
 
         # Log sample training images to show on wandb
         if config.log_wandb and batch_idx <= 1:
@@ -702,9 +702,9 @@ def train_one_epoch(
         if batch_idx <= 2 or batch_idx % config.print_interval == 0 or batch_idx >= len(dataloader) - 1:
             print(
                 f"Train Epoch:{epoch:4d}" + (f"/{n_epoch}" if n_epoch is not None else ""),
-                " Step:{:4d}/{}".format(batch_idx + 1, len(dataloader)),
-                " Loss:{:8.5f}".format(loss_batch),
-                " LR: {}".format(scheduler.get_last_lr()),
+                f" Step:{batch_idx + 1:4d}/{len(dataloader)}",
+                f" Loss:[F: {loss_batch:6.3f}, KL: {loss_kld:6.3f}]",
+                f" LR: {scheduler.get_last_lr()[0]:.5f}",
             )
 
         # Log to wandb
@@ -720,6 +720,7 @@ def train_one_epoch(
                 "training/stepwise/n_samples_seen": n_samples_seen,
                 "training/stepwise/train/throughput": throughput,
                 "training/stepwise/train/loss": loss_batch,
+                "training/stepwise/train/loss_kld": loss_kld,
             }
             # Track the learning rate of each parameter group
             for lr_idx in range(len(optimizer.param_groups)):

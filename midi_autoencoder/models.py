@@ -167,6 +167,7 @@ class VanillaVAE(nn.Module):
         self.input_dim = input_dim
         self.in_channels = in_channels
         self.verbose = verbose
+        self.kld_weight = 0.0
 
         # Default hidden dimensions
         if hidden_dims is None:
@@ -221,8 +222,9 @@ class VanillaVAE(nn.Module):
             nn.BatchNorm2d(32),
             nn.LeakyReLU(negative_slope=0.01),
             nn.Conv2d(32, 1, kernel_size=3, stride=1, padding=1),
-            # nn.Upsample(size=(28, 28), mode="bilinear", align_corners=False),
         )
+
+        self._init_weights()
 
     def _compute_conv_output_size(self, dim: int, num_layers: int, kernel: int = 3, stride: int = 2, padding: int = 1):
         """
@@ -252,18 +254,23 @@ class VanillaVAE(nn.Module):
         """
         if self.verbose:
             print(f"encoder input: {x.shape} [{x.min()}, {x.max()}]")
+
         x_hat = self.encoder(x)
         if self.verbose:
             print(f"encoder result: {x_hat.shape} [{x_hat.min()}, {x_hat.max()}]")
+
         x_hat = x_hat.flatten(start_dim=1)
         if self.verbose:
             print(f"flatten result: {x_hat.shape} [{x_hat.min()}, {x_hat.max()}]")
+
         mu = self.fc_mu(x_hat)
         if self.verbose:
-            print(f"mu result: {mu.shape} [{mu.min()}, {mu.max()}]")
+            print(f"mu: {mu.shape} [{mu.min()}, {mu.max()}]")
+
         log_var = self.fc_var(x_hat)
         if self.verbose:
-            print(f"log_var result: {log_var.shape} [{log_var.min()}, {log_var.max()}]")
+            print(f"log_var: {log_var.shape} [{log_var.min()}, {log_var.max()}]")
+
         return EncoderOutput(mu=mu, log_var=log_var, pre_latents=x_hat)
 
     def decode(self, z: Tensor) -> Tensor:
@@ -273,18 +280,15 @@ class VanillaVAE(nn.Module):
         x = self.decoder_input(z)
         if self.verbose:
             (f"decoder input result: {x.shape}  [{x.min()}, {x.max()}]")
-        # x = x.view(
-        #     -1,
-        #     self.hidden_dims[-1],
-        #     self.last_conv_size,
-        #     self.last_conv_size,
-        # )  # Reshape to match the decoder's input
-        x = x.view(-1, 256, 2, 2)
 
+        x = x.view(-1, 256, 2, 2)
         x = self.decoder(x)
         if self.verbose:
             print(f"decoder result: {x.shape}  [{x.min()}, {x.max()}]")
+
         x = self.final_layer(x)
+        if self.verbose:
+            print(f"final layer result: {x.shape}  [{x.min()}, {x.max()}]")
 
         return x
 
@@ -302,9 +306,9 @@ class VanillaVAE(nn.Module):
         """
         encoding = self.encode(x)
         z = self.reparameterize(encoding["mu"], encoding["log_var"])
-        return ModelOutput(output=self.decode(z), input=input, encoded=encoding, latents=z)
+        return ModelOutput(output=self.decode(z), input=x, encoded=encoding, latents=z)
 
-    def loss(self, output_model: ModelOutput):
+    def loss(self, output: ModelOutput):
         r"""
         Computes the VAE loss function.
         KL(N(\mu, \sigma), N(0, 1)) = \log \frac{1}{\sigma} + \frac{\sigma^2 + \mu^2}{2} - \frac{1}{2}
@@ -322,19 +326,71 @@ class VanillaVAE(nn.Module):
         reconstruction loss : Tensor
         KLD loss : Tensor
         """
-        recons_loss = F.mse_loss(output_model["output"], output_model["input"])
-        log_var = torch.clamp(output_model["encoded"]["log_var"], min=-10, max=10)
-        log_var_exp = (log_var + 1e-8).exp()
-        kld_loss = torch.mean(
-            -0.5 * torch.sum(1 + log_var - output_model["encoded"]["mu"] ** 2 - log_var_exp, dim=1),
-            dim=0,
-        )  # TODO move this to its own fn
-        loss = recons_loss + self.kld_weight * kld_loss
+        loss_reconstruction = F.mse_loss(output["output"], output["input"])
+        mu = output["encoded"]["mu"]
+        log_var = output["encoded"]["log_var"]  # torch.clamp(output["encoded"]["log_var"], min=-10, max=10)
+        # log_var_exp = (log_var + 1e-8).exp()
+        # kld_loss = torch.mean(
+        #     -0.5 * torch.sum(input=1 + log_var - mu ** 2 - log_var_exp, dim=1),
+        #     dim=0,
+        # )  # TODO move this to its own fn
+
+        loss_kld = -0.5 * torch.mean(torch.sum(1 + log_var - mu**2 - torch.exp(log_var), dim=-1))
+
+        loss = loss_reconstruction + self.kld_weight * loss_kld
         return LossOutput(
             loss=loss,
-            reconstruction_loss=recons_loss.detach(),
-            kld_loss=-kld_loss.detach(),
+            reconstruction_loss=loss_reconstruction.detach(),
+            kld_loss=-loss_kld.detach(),
         )
+
+        # reconstruction_function = nn.MSELoss(reduction='sum')
+        # MSE = reconstruction_function(recon_x, x)
+
+        # # https://arxiv.org/abs/1312.6114 (Appendix B)
+        # # 0.5 * sum(1 + log(sigma^2) - mu^2 - sigma^2)
+
+        # KLD_element = mu.pow(2).add_(logvar.exp()).mul_(-1).add_(1).add_(logvar)
+        # KLD = torch.sum(KLD_element).mul_(-0.5)
+
+        # return MSE + beta*KLD
+
+    def _init_weights(self):
+        for m in self.encoder.modules():
+            if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+        for m in self.decoder.modules():
+            if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+        for m in self.final_layer.modules():
+            if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+        print("layer weight initialization complete")
+        for name, param in m.named_parameters():
+            if "weight" in name:
+                print(f"{name}:")
+                print(f"  Shape: {param.shape}")
+                print(f"  Mean: {param.data.mean().item():.6f}")
+                print(f"  Std Dev: {param.data.std().item():.6f}")
+                print(f"  Min: {param.data.min().item():.6f}")
+                print(f"  Max: {param.data.max().item():.6f}")
+                print(f"  Norm: {param.data.norm().item():.6f}\n")
 
     # utility -----------------------------------------------------------------
     def sample(self, num_samples: int, current_device: int, **kwargs) -> Tensor:
