@@ -398,7 +398,8 @@ def run(config):
         n_epoch_samples = n_samples_seen - n_samples_seen_before
         train_stats["throughput"] = n_epoch_samples / timing_stats["train"]
 
-        print(f"\nTraining epoch {epoch}/{config.epochs} summary:")
+        print(f"Training epoch {epoch}/{config.epochs} summary:")
+        print(f"  Total Steps ........{total_step:8d}")
         print(f"  Steps ..............{len(dataloader_train):8d}")
         print(f"  Samples ............{n_epoch_samples:8d}")
         if timing_stats["train"] > 172800:
@@ -721,6 +722,7 @@ def train_one_epoch(
                 "training/stepwise/train/throughput": throughput,
                 "training/stepwise/train/loss": loss_batch,
                 "training/stepwise/train/loss_kld": loss_kld,
+                "training/stepwise/train/kld_weight": model.kld_weight,
             }
             # Track the learning rate of each parameter group
             for lr_idx in range(len(optimizer.param_groups)):
@@ -869,7 +871,7 @@ def get_parser():
     group.add_argument(
         "--n_features",
         type=int,
-        default=100,
+        default=10,
         help="Number of hidden features. Default: %(default)s",
     )
     # Optimization args -------------------------------------------------------

@@ -35,7 +35,7 @@ class VanillaVAE(nn.Module):
         self.input_dim = input_dim
         self.in_channels = in_channels
         self.verbose = verbose
-        self.kld_weight = 0.0
+        self.kld_weight = 0  # 1e-5  # Start with a very small KL weight
 
         # Default hidden dimensions
         if hidden_dims is None:
@@ -197,15 +197,15 @@ class VanillaVAE(nn.Module):
         loss_reconstruction = F.mse_loss(output["output"], output["input"])
         mu = output["encoded"]["mu"]
         log_var = output["encoded"]["log_var"]  # torch.clamp(output["encoded"]["log_var"], min=-10, max=10)
-        # log_var_exp = (log_var + 1e-8).exp()
-        # kld_loss = torch.mean(
-        #     -0.5 * torch.sum(input=1 + log_var - mu ** 2 - log_var_exp, dim=1),
-        #     dim=0,
-        # )  # TODO move this to its own fn
 
         loss_kld = -0.5 * torch.mean(torch.sum(1 + log_var - mu**2 - torch.exp(log_var), dim=-1))
 
+        # Combine reconstruction and KL loss with a dynamic weight for KL divergence
         loss = loss_reconstruction + self.kld_weight * loss_kld
+
+        # Optional: Adjust kld_weight over time (e.g., annealing)
+        # self.kld_weight = min(self.kld_weight * 1.01, 1.0)
+
         return LossOutput(
             loss=loss,
             reconstruction_loss=loss_reconstruction.detach(),
