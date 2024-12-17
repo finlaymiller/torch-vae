@@ -398,7 +398,7 @@ def run(config):
         n_epoch_samples = n_samples_seen - n_samples_seen_before
         train_stats["throughput"] = n_epoch_samples / timing_stats["train"]
 
-        print(f"Training epoch {epoch}/{config.epochs} summary:")
+        print(f"\nTraining epoch {epoch}/{config.epochs} summary:")
         print(f"  Total Steps ........{total_step:8d}")
         print(f"  Steps ..............{len(dataloader_train):8d}")
         print(f"  Samples ............{n_epoch_samples:8d}")
@@ -670,6 +670,7 @@ def train_one_epoch(
         ct_logging.record()
 
         loss_batch = loss_output["loss"].detach().item()
+        loss_recon = loss_output["reconstruction_loss"].detach().item()
         loss_kld = loss_output["kld_loss"].detach().item()
         loss_epoch += loss_batch
 
@@ -706,6 +707,7 @@ def train_one_epoch(
                 f" Step:{batch_idx + 1:4d}/{len(dataloader)}",
                 f" Loss:[F: {loss_batch:6.3f}, KL: {loss_kld:6.3f}]",
                 f" LR: {scheduler.get_last_lr()[0]:.5f}",
+                f" KL Weight: {model.kld_weight:.5f}",
             )
 
         # Log to wandb
@@ -721,6 +723,7 @@ def train_one_epoch(
                 "training/stepwise/n_samples_seen": n_samples_seen,
                 "training/stepwise/train/throughput": throughput,
                 "training/stepwise/train/loss": loss_batch,
+                "training/stepwise/train/loss_recon": loss_recon,
                 "training/stepwise/train/loss_kld": loss_kld,
                 "training/stepwise/train/kld_weight": model.kld_weight,
             }

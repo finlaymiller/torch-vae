@@ -96,7 +96,7 @@ def get_transform(transform_type: str = "noaug", image_size: int = 32, args=None
                 v2.Resize(image_size),  # Resize shortest side to image_size
                 v2.CenterCrop(image_size),  # If it is not square, center crop
                 v2.ToImage(),
-                v2.ToDtype(torch.float32, scale=True),
+                v2.ToDtype(torch.float32, scale=True),  # scales [0, 1]
                 v2.Normalize(mean=torch.tensor(mean), std=torch.tensor(std)),
             ]
         )
@@ -108,7 +108,7 @@ def get_transform(transform_type: str = "noaug", image_size: int = 32, args=None
                 v2.Resize(image_size),
                 v2.CenterCrop(image_size),
                 v2.ToImage(),
-                v2.ToDtype(torch.float32, scale=True),
+                v2.ToDtype(torch.float32, scale=True),  # scales [0, 1]
                 v2.Normalize(mean=torch.tensor(mean), std=torch.tensor(std)),
             ]
         )

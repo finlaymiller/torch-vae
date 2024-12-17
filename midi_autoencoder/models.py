@@ -5,29 +5,16 @@ from types_helpers import EncoderOutput, LossOutput, ModelOutput
 
 
 class VanillaVAE(nn.Module):
-    """
-    Implementation of the classical VAE
-
-    Parameters
-    ----------
-    latent_dim: int
-        dimension of the latent space
-    encoder: nn.Module
-        implements the Encoder part
-    full_decoder: nn.Module
-        implements the Decoder part
-    flatten: nn.Module
-        einops Rearrange layer to ease the pre process of the latent work
-    fc_mu: nn.Module
-        linear Module which "learns" the mean vector of the latents distribution
-    fc_var: nn.Module
-        linear Module which "learns" the log-var vector of the latents distribution
-    """
-
     name = "VanillaVAE"
 
     def __init__(
-        self, in_channels: int, embed_dim: int, input_dim: int, hidden_dims: list[int] = None, verbose: bool = False
+        self,
+        in_channels: int,
+        embed_dim: int,
+        input_dim: int,
+        hidden_dims: list[int] = None,
+        kld_weight: float = 1.0,
+        verbose: bool = False,
     ):
         super(VanillaVAE, self).__init__()
 
@@ -35,7 +22,7 @@ class VanillaVAE(nn.Module):
         self.input_dim = input_dim
         self.in_channels = in_channels
         self.verbose = verbose
-        self.kld_weight = 0  # 1e-5  # Start with a very small KL weight
+        self.kld_weight = kld_weight
 
         # Default hidden dimensions
         if hidden_dims is None:
@@ -62,6 +49,7 @@ class VanillaVAE(nn.Module):
             )
             in_channels = h_dim
         self.encoder = nn.Sequential(*modules)
+        self._init_weights(self.encoder, "encoder")
 
         # Latent space
         self.fc_mu = nn.Linear(self.flattened_size, self.latent_dim)
@@ -82,17 +70,17 @@ class VanillaVAE(nn.Module):
                     nn.LeakyReLU(),
                 )
             )
-
         self.decoder = nn.Sequential(*modules)
+        self._init_weights(self.decoder, "decoder")
 
         self.final_layer = nn.Sequential(
-            nn.ConvTranspose2d(32, 32, kernel_size=3, stride=2, padding=1, output_padding=1),
-            nn.BatchNorm2d(32),
-            nn.LeakyReLU(negative_slope=0.01),
-            nn.Conv2d(32, 1, kernel_size=3, stride=1, padding=1),
+            nn.ConvTranspose2d(hidden_dims[-1], hidden_dims[-1], kernel_size=3, stride=2, padding=1, output_padding=1),
+            nn.BatchNorm2d(hidden_dims[-1]),
+            nn.LeakyReLU(),
+            nn.Conv2d(hidden_dims[-1], 1, kernel_size=3, stride=1, padding=1),
+            nn.Sigmoid(),
         )
-
-        self._init_weights()
+        self._init_weights(self.final_layer, "final layer")
 
     def _compute_conv_output_size(self, dim: int, num_layers: int, kernel: int = 3, stride: int = 2, padding: int = 1):
         """
@@ -118,7 +106,22 @@ class VanillaVAE(nn.Module):
 
     def encode(self, x: Tensor) -> EncoderOutput:
         """
-        Encodes the input and returns mu and log_var.
+        Encodes the input by passing through the convolutional network
+        and outputs the latent variables.
+
+        Parameters
+        ----------
+        x : Tensor
+            Input tensor [N x C x H x W]
+
+        Returns
+        -------
+        mu : Tensor
+            mean of latent variables
+        log_var : Tensor
+            log variance of latent variables
+        pre_latents : Tensor
+            result of encoding before ???
         """
         if self.verbose:
             print(f"encoder input: {x.shape} [{x.min()}, {x.max()}]")
@@ -143,13 +146,24 @@ class VanillaVAE(nn.Module):
 
     def decode(self, z: Tensor) -> Tensor:
         """
-        Decodes the latent representation z.
+        Maps the given latent variables onto the image space by de-convolving,
+        matching the convolutions performed by the encoder.
+
+        Parameters
+        ----------
+        z : Tensor
+            Latent variable [B x D]
+
+        Returns
+        -------
+        result : Tensor
+            [B x C x H x W]
         """
         x = self.decoder_input(z)
         if self.verbose:
             (f"decoder input result: {x.shape}  [{x.min()}, {x.max()}]")
 
-        x = x.view(-1, 256, 2, 2)
+        x = x.view(-1, 256, 2, 2)  # TODO: get proper second dime size from hidden layers
         x = self.decoder(x)
         if self.verbose:
             print(f"decoder result: {x.shape}  [{x.min()}, {x.max()}]")
@@ -168,10 +182,7 @@ class VanillaVAE(nn.Module):
         eps = torch.randn_like(std)
         return eps * std + mu
 
-    def forward(self, x):
-        """
-        Forward pass through the VAE.
-        """
+    def forward(self, x: torch.Tensor) -> ModelOutput:
         encoding = self.encode(x)
         z = self.reparameterize(encoding["mu"], encoding["log_var"])
         return ModelOutput(output=self.decode(z), input=x, encoded=encoding, latents=z)
@@ -194,17 +205,18 @@ class VanillaVAE(nn.Module):
         reconstruction loss : Tensor
         KLD loss : Tensor
         """
-        loss_reconstruction = F.mse_loss(output["output"], output["input"])
+        loss_reconstruction = F.binary_cross_entropy(output["output"], output["input"])
         mu = output["encoded"]["mu"]
-        log_var = output["encoded"]["log_var"]  # torch.clamp(output["encoded"]["log_var"], min=-10, max=10)
+        log_var = output["encoded"][
+            "log_var"
+        ]  # option to clamp: torch.clamp(output["encoded"]["log_var"], min=-10, max=10)
 
         loss_kld = -0.5 * torch.mean(torch.sum(1 + log_var - mu**2 - torch.exp(log_var), dim=-1))
 
-        # Combine reconstruction and KL loss with a dynamic weight for KL divergence
         loss = loss_reconstruction + self.kld_weight * loss_kld
 
-        # Optional: Adjust kld_weight over time (e.g., annealing)
-        # self.kld_weight = min(self.kld_weight * 1.01, 1.0)
+        # option: increase kld_weight over time
+        # self.kld_weight = min(self.kld_weight * 1.005, 1.0)
 
         return LossOutput(
             loss=loss,
@@ -212,35 +224,9 @@ class VanillaVAE(nn.Module):
             kld_loss=-loss_kld.detach(),
         )
 
-        # reconstruction_function = nn.MSELoss(reduction='sum')
-        # MSE = reconstruction_function(recon_x, x)
-
-        # # https://arxiv.org/abs/1312.6114 (Appendix B)
-        # # 0.5 * sum(1 + log(sigma^2) - mu^2 - sigma^2)
-
-        # KLD_element = mu.pow(2).add_(logvar.exp()).mul_(-1).add_(1).add_(logvar)
-        # KLD = torch.sum(KLD_element).mul_(-0.5)
-
-        # return MSE + beta*KLD
-
-    def _init_weights(self):
-        for m in self.encoder.modules():
-            if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
-                nn.init.xavier_uniform_(m.weight)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
-        for m in self.decoder.modules():
-            if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
-                nn.init.xavier_uniform_(m.weight)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
-        for m in self.final_layer.modules():
+    def _init_weights(self, module: nn.Sequential, name: str):
+        # encoder
+        for m in module.modules():
             if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
                 nn.init.xavier_uniform_(m.weight)
                 if m.bias is not None:
@@ -249,7 +235,7 @@ class VanillaVAE(nn.Module):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
 
-        print("layer weight initialization complete")
+        print(f"{name} layer weight initialization complete")
         for name, param in m.named_parameters():
             if "weight" in name:
                 print(f"{name}:")
